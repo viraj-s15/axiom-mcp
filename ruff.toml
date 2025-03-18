@@ -40,4 +40,3 @@ select = [
 
 [lint.isort]
 known-first-party = ["axiom_mcp"]
-force-single-line = true
