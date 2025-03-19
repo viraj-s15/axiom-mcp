@@ -81,11 +81,8 @@ def test_specific_message_types() -> None:
     assert system_msg.role == "system"
 
 
-pytestmark = pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-async def test_prompt_creation(_: pytest.FixtureRequest) -> None:
+async def test_prompt_creation() -> None:
     """Test prompt creation and basic functionality."""
 
     def example_fn(name: str, age: int = 0) -> str:
@@ -117,7 +114,7 @@ async def test_prompt_creation(_: pytest.FixtureRequest) -> None:
 
 
 @pytest.mark.asyncio
-async def test_prompt_rendering(_: pytest.FixtureRequest) -> None:
+async def test_prompt_rendering() -> None:
     """Test prompt rendering with different return types."""
 
     def text_fn(text: str) -> str:
@@ -162,7 +159,7 @@ async def test_prompt_rendering(_: pytest.FixtureRequest) -> None:
 
 
 @pytest.mark.asyncio
-async def test_prompt_validation(_: pytest.FixtureRequest) -> None:
+async def test_prompt_validation() -> None:
     """Test prompt validation and error handling."""
 
     def example_fn(required_arg: str) -> str:
@@ -179,14 +176,14 @@ async def test_prompt_validation(_: pytest.FixtureRequest) -> None:
 
 def test_lambda_prompt_creation() -> None:
     """Test that lambda functions are not allowed without names."""
-    with pytest.raises(
-        ValueError, match="Lambda functions must be provided with a name"
-    ):
-        Prompt.from_function(fn=lambda x: x)
+    from axiom_mcp.exceptions import LambdaNameError
+
+    with pytest.raises(LambdaNameError):
+        Prompt.from_function(fn=lambda x: x, name=None)
 
 
 @pytest.mark.asyncio
-async def test_async_prompt(_: pytest.FixtureRequest) -> None:
+async def test_async_prompt() -> None:
     """Test async prompt functions."""
 
     async def async_fn(text: str) -> str:
@@ -212,27 +209,27 @@ def test_prompt_timestamps() -> None:
 
 
 @pytest.fixture
-def sample_message(_: pytest.FixtureRequest) -> Message:
+def sample_message() -> Message:
     """Create a sample message for testing."""
     return Message(content="Test message", role="user")
 
 
 @pytest.fixture
-def sample_prompt(_: pytest.FixtureRequest) -> Prompt:
+def sample_prompt() -> Prompt:
     """Create a sample prompt for testing."""
 
     def test_prompt() -> str:
         return "Test response"
 
-    return Prompt.from_function(fn=test_prompt)
+    return Prompt.from_function(fn=test_prompt, name="test_prompt")
 
 
 @pytest.fixture
-def async_prompt(_: pytest.FixtureRequest) -> Prompt:
+def async_prompt() -> Prompt:
     """Create an async prompt for testing."""
 
     async def test_prompt() -> str:
         await asyncio.sleep(0.1)
         return "Async test response"
 
-    return Prompt.from_function(fn=test_prompt)
+    return Prompt.from_function(fn=test_prompt, name="async_test_prompt")

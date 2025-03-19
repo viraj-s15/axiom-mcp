@@ -15,8 +15,6 @@ from typing_extensions import runtime_checkable
 from axiom_mcp.exceptions import (
     InvalidMessageRoleError,
     LambdaNameError,
-    MissingArgumentsError,
-    PromptRenderError,
 )
 
 # Define ContentType using type
@@ -138,22 +136,21 @@ class Prompt(BaseModel):
 
         arguments = []
         for param_name, param in sig.parameters.items():
-            param_type = type_hints.get(param_name, Any).__name__
+            param_type = type_hints.get(param_name, Any)
+            type_name = getattr(param_type, "__name__", str(param_type))
             required = param.default == param.empty
             default = None if param.default == param.empty else param.default
-
             arguments.append(
                 PromptArgument(
                     name=param_name,
                     description=None,
                     required=required,
-                    type_hint=param_type,
+                    type_hint=type_name,
                     default=default,
                 )
             )
 
         validated_fn = validate_call(fn)
-
         return cls(
             name=func_name,
             description=description or fn.__doc__ or "",
@@ -170,17 +167,24 @@ class Prompt(BaseModel):
         if isinstance(msg, dict):
             role = msg.get("role", "user")
             if role == "user":
-                return Message(content=msg, role="user")
+                return UserMessage(**msg)
             if role == "assistant":
                 return AssistantMessage(**msg)
             if role == "system":
                 return SystemMessage(**msg)
             raise InvalidMessageRoleError(role)
         if isinstance(msg, str):
-            return Message(content=msg, role="user")
-        return Message(content=str(msg), role="user")
+            return UserMessage(role="user", content=msg)
+        return UserMessage(role="user", content=str(msg))
 
-    async def render(self, arguments: dict[str, Any] | None = None) -> list[Message]:
+    async def _execute(self, arguments: dict[str, Any]) -> Any:
+        """Execute the prompt function with the given arguments."""
+        result = self.fn(**arguments)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
+    def _validate_arguments(self, arguments: dict[str, Any] | None) -> dict[str, Any]:
         arguments = arguments or {}
 
         missing = [
@@ -191,15 +195,21 @@ class Prompt(BaseModel):
         if missing:
             raise MissingArgumentsError(missing)
 
-        try:
-            result = self.fn(**arguments)
-            if inspect.iscoroutine(result):
-                result = await result
+        return arguments
 
-            if not isinstance(result, list | tuple):
-                result = [result]
+    async def render(self, arguments: dict[str, Any] | None = None) -> list[Message]:
+        validated_args = self._validate_arguments(arguments)
+        result = await self._execute(validated_args)
 
-            return [self._create_message(msg) for msg in result]
+        if isinstance(result, str):
+            return [self._create_message(result)]
+        if isinstance(result, Message):
+            return [result]
+        return [self._create_message(msg) for msg in result]
 
-        except Exception as e:
-            raise PromptRenderError(self.name, str(e)) from e
+
+class MissingArgumentsError(ValueError):
+    """Error raised when required prompt arguments are missing."""
+
+    def __init__(self, missing: list[str]):
+        super().__init__(f"Missing required arguments: {', '.join(missing)}")

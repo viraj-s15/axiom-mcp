@@ -4,7 +4,6 @@ import asyncio
 from collections.abc import Callable
 
 import pytest
-from pytest import FixtureRequest
 
 from axiom_mcp.exceptions import PromptRenderError
 from axiom_mcp.prompts.base import Message
@@ -12,13 +11,13 @@ from axiom_mcp.prompts.utils import ExecutableFunction, FunctionRegistry, regist
 
 
 @pytest.fixture
-def registry_instance(_: FixtureRequest) -> FunctionRegistry:
+def registry_instance() -> FunctionRegistry:
     """Create a clean registry for testing."""
     return FunctionRegistry()
 
 
 @pytest.fixture
-def example_function(_: FixtureRequest) -> Callable[[str], str]:
+def example_function() -> Callable[[str], str]:
     """Create an example function for testing."""
 
     def func(text: str) -> str:
@@ -84,9 +83,7 @@ def test_list_functions(
 
 
 @pytest.mark.asyncio
-async def test_execute_function(
-    _: FixtureRequest, registry_instance: FunctionRegistry
-) -> None:
+async def test_execute_function(registry_instance: FunctionRegistry) -> None:
     """Test function execution."""
 
     @registry_instance.register
@@ -100,9 +97,7 @@ async def test_execute_function(
 
 
 @pytest.mark.asyncio
-async def test_execute_with_args(
-    _: FixtureRequest, registry_instance: FunctionRegistry
-) -> None:
+async def test_execute_with_args(registry_instance: FunctionRegistry) -> None:
     """Test function execution with arguments."""
 
     @registry_instance.register
@@ -115,9 +110,7 @@ async def test_execute_with_args(
 
 
 @pytest.mark.asyncio
-async def test_execute_async_function(
-    _: FixtureRequest, registry_instance: FunctionRegistry
-) -> None:
+async def test_execute_async_function(registry_instance: FunctionRegistry) -> None:
     """Test async function execution."""
 
     @registry_instance.register
@@ -131,9 +124,7 @@ async def test_execute_async_function(
 
 
 @pytest.mark.asyncio
-async def test_execute_sync_function(
-    _: FixtureRequest, registry_instance: FunctionRegistry
-) -> None:
+async def test_execute_sync_function(registry_instance: FunctionRegistry) -> None:
     """Test synchronous function execution."""
 
     @registry_instance.register
@@ -146,9 +137,7 @@ async def test_execute_sync_function(
 
 
 @pytest.mark.asyncio
-async def test_execute_nonexistent(
-    _: FixtureRequest, registry_instance: FunctionRegistry
-) -> None:
+async def test_execute_nonexistent(registry_instance: FunctionRegistry) -> None:
     """Test executing nonexistent function."""
     with pytest.raises(PromptRenderError):
         await registry_instance.execute("nonexistent")

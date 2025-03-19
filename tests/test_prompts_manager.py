@@ -3,20 +3,19 @@
 import asyncio
 
 import pytest
-from pytest import FixtureRequest
 
 from axiom_mcp.prompts.base import Prompt
 from axiom_mcp.prompts.manager import PromptManager
 
 
 @pytest.fixture
-def manager(_: FixtureRequest) -> PromptManager:
+def manager() -> PromptManager:
     """Create a test prompt manager."""
     return PromptManager(warn_on_duplicate=True, enable_metrics=True)
 
 
 @pytest.fixture
-def sample_prompt(_: FixtureRequest) -> Prompt:
+def sample_prompt() -> Prompt:
     """Create a sample prompt for testing."""
 
     def example_fn(text: str) -> str:
