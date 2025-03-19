@@ -1,3 +1,7 @@
+"""Base classes and types for prompt management."""
+
+from __future__ import annotations
+
 import inspect
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
@@ -8,9 +12,17 @@ from mcp.types import TextContent as MCPTextContent
 from pydantic import BaseModel, ConfigDict, Field, validate_call
 from typing_extensions import runtime_checkable
 
-from axiom_mcp.exceptions import LambdaNameError, MissingArgumentsError
+from axiom_mcp.exceptions import (
+    InvalidMessageRoleError,
+    LambdaNameError,
+    MissingArgumentsError,
+    PromptRenderError,
+)
 
-ContentType = str | dict[str, Any] | MCPTextContent | ImageContent | EmbeddedResource
+# Define ContentType using type
+type ContentType = (
+    str | dict[str, Any] | MCPTextContent | ImageContent | EmbeddedResource
+)
 
 
 class Message(BaseModel):
@@ -23,7 +35,7 @@ class Message(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    def __init__(self, content: ContentType, **kwargs):
+    def __init__(self, content: ContentType, **kwargs: Any) -> None:
         if isinstance(content, str):
             content = MCPTextContent(type="text", text=content)
         elif isinstance(content, dict):
@@ -102,7 +114,7 @@ class Prompt(BaseModel):
     version: str = Field(default="1.0.0", description="Version of the prompt")
     arguments: list[PromptArgument] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
-    fn: Callable = Field(..., exclude=True)
+    fn: Callable[..., Any] = Field(..., exclude=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -116,7 +128,7 @@ class Prompt(BaseModel):
         description: str | None = None,
         version: str = "1.0.0",
         tags: list[str] | None = None,
-    ) -> "Prompt":
+    ) -> Prompt:
         func_name = name or fn.__name__
         if func_name == "<lambda>":
             raise LambdaNameError()
@@ -158,15 +170,15 @@ class Prompt(BaseModel):
         if isinstance(msg, dict):
             role = msg.get("role", "user")
             if role == "user":
-                return UserMessage(**msg)
+                return Message(content=msg, role="user")
             if role == "assistant":
                 return AssistantMessage(**msg)
             if role == "system":
                 return SystemMessage(**msg)
-            raise ValueError(f"Invalid message role: {role}")
+            raise InvalidMessageRoleError(role)
         if isinstance(msg, str):
-            return UserMessage(role="user", content=msg)
-        return UserMessage(role="user", content=str(msg))
+            return Message(content=msg, role="user")
+        return Message(content=str(msg), role="user")
 
     async def render(self, arguments: dict[str, Any] | None = None) -> list[Message]:
         arguments = arguments or {}
@@ -184,10 +196,10 @@ class Prompt(BaseModel):
             if inspect.iscoroutine(result):
                 result = await result
 
-            if not isinstance(result, (list, tuple)):
+            if not isinstance(result, list | tuple):
                 result = [result]
 
             return [self._create_message(msg) for msg in result]
 
         except Exception as e:
-            raise ValueError(f"Error rendering prompt '{self.name}': {str(e)}") from e
+            raise PromptRenderError(self.name, str(e)) from e

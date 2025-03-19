@@ -195,7 +195,7 @@ class ModelResponseError(ModelError):
 class LambdaNameError(AxiomMCPError):
     """Raised when a lambda function is provided without a name."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__("Lambda functions must be provided with a name")
 
 
@@ -204,3 +204,24 @@ class MissingArgumentsError(AxiomMCPError):
 
     def __init__(self, missing_args: list[str]):
         super().__init__(f"Missing required arguments: {', '.join(missing_args)}")
+
+
+class InvalidMessageRoleError(AxiomMCPError):
+    """Raised when an invalid message role is provided."""
+
+    def __init__(self, role: str):
+        super().__init__(f"Invalid message role: {role}")
+
+
+class UnknownPromptError(AxiomMCPError):
+    """Raised when attempting to use an unknown prompt."""
+
+    def __init__(self, name: str):
+        super().__init__(f"Unknown prompt: {name}")
+
+
+class PromptRenderError(AxiomMCPError):
+    """Raised when there is an error rendering a prompt."""
+
+    def __init__(self, name: str, error: str):
+        super().__init__(f"Error rendering prompt '{name}': {error}")

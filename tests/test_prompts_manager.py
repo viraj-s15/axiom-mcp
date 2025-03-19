@@ -3,19 +3,20 @@
 import asyncio
 
 import pytest
+from pytest import FixtureRequest
 
 from axiom_mcp.prompts.base import Prompt
-from axiom_mcp.prompts.manager import PromptManager, PromptMetrics
+from axiom_mcp.prompts.manager import PromptManager
 
 
 @pytest.fixture
-def manager():
+def manager(_: FixtureRequest) -> PromptManager:
     """Create a test prompt manager."""
     return PromptManager(warn_on_duplicate=True, enable_metrics=True)
 
 
 @pytest.fixture
-def sample_prompt():
+def sample_prompt(_: FixtureRequest) -> Prompt:
     """Create a sample prompt for testing."""
 
     def example_fn(text: str) -> str:
@@ -29,21 +30,25 @@ def sample_prompt():
     )
 
 
-def test_add_prompt(manager, sample_prompt):
+def test_add_prompt(manager: PromptManager, sample_prompt: Prompt) -> None:
     """Test adding a prompt to the manager."""
     added_prompt = manager.add_prompt(sample_prompt)
     assert added_prompt == sample_prompt
     assert manager.get_prompt("test_prompt") == sample_prompt
 
 
-def test_duplicate_prompt_warning(manager, sample_prompt):
+def test_duplicate_prompt_warning(
+    manager: PromptManager, sample_prompt: Prompt
+) -> None:
     """Test warning behavior for duplicate prompts."""
     manager.add_prompt(sample_prompt)
     duplicate = manager.add_prompt(sample_prompt)
     assert duplicate == sample_prompt
 
 
-def test_force_add_duplicate_prompt(manager, sample_prompt):
+def test_force_add_duplicate_prompt(
+    manager: PromptManager, sample_prompt: Prompt
+) -> None:
     """Test forcing addition of duplicate prompt."""
     manager.add_prompt(sample_prompt)
 
@@ -58,19 +63,19 @@ def test_force_add_duplicate_prompt(manager, sample_prompt):
     assert manager.get_prompt(sample_prompt.name) == modified_prompt
 
 
-def test_remove_prompt(manager, sample_prompt):
+def test_remove_prompt(manager: PromptManager, sample_prompt: Prompt) -> None:
     """Test removing a prompt."""
     manager.add_prompt(sample_prompt)
     assert manager.remove_prompt(sample_prompt.name) is True
     assert manager.get_prompt(sample_prompt.name) is None
 
 
-def test_remove_nonexistent_prompt(manager):
+def test_remove_nonexistent_prompt(manager: PromptManager) -> None:
     """Test removing a prompt that doesn't exist."""
     assert manager.remove_prompt("nonexistent") is False
 
 
-def test_list_prompts(manager, sample_prompt):
+def test_list_prompts(manager: PromptManager, sample_prompt: Prompt) -> None:
     """Test listing all prompts."""
     manager.add_prompt(sample_prompt)
     prompts = manager.list_prompts()
@@ -78,7 +83,7 @@ def test_list_prompts(manager, sample_prompt):
     assert prompts[0] == sample_prompt
 
 
-def test_get_prompts_by_tag(manager, sample_prompt):
+def test_get_prompts_by_tag(manager: PromptManager, sample_prompt: Prompt) -> None:
     """Test retrieving prompts by tag."""
     manager.add_prompt(sample_prompt)
     tagged_prompts = manager.get_prompts_by_tag("test")
@@ -89,23 +94,26 @@ def test_get_prompts_by_tag(manager, sample_prompt):
     assert len(manager.get_prompts_by_tag("nonexistent")) == 0
 
 
-def test_prompt_metrics(manager, sample_prompt):
+def test_prompt_metrics(manager: PromptManager, sample_prompt: Prompt) -> None:
     """Test prompt metrics collection."""
     manager.add_prompt(sample_prompt)
     metrics = manager.get_prompt_metrics(sample_prompt.name)
-    assert isinstance(metrics, PromptMetrics)
+    assert metrics is not None
     assert metrics.total_calls == 0
     assert metrics.successful_calls == 0
     assert metrics.failed_calls == 0
 
 
 @pytest.mark.asyncio
-async def test_render_prompt_metrics(manager, sample_prompt):
+async def test_render_prompt_metrics(
+    manager: PromptManager, sample_prompt: Prompt
+) -> None:
     """Test metrics update after rendering."""
     manager.add_prompt(sample_prompt)
     await manager.render_prompt(sample_prompt.name, {"text": "test"})
 
     metrics = manager.get_prompt_metrics(sample_prompt.name)
+    assert metrics is not None
     assert metrics.total_calls == 1
     assert metrics.successful_calls == 1
     assert metrics.failed_calls == 0
@@ -113,26 +121,39 @@ async def test_render_prompt_metrics(manager, sample_prompt):
 
 
 @pytest.mark.asyncio
-async def test_render_prompt_failure_metrics(manager):
+async def test_render_prompt_failure_metrics(
+    manager: PromptManager,
+) -> None:
     """Test metrics update after failed rendering."""
 
+    class TestError(Exception):
+        """Error raised for testing purposes."""
+
+        message = "Test error"
+
+        def __init__(self) -> None:
+            super().__init__(self.message)
+
     def failing_fn(text: str) -> str:
-        raise ValueError("Test error")
+        raise TestError()
 
     prompt = Prompt.from_function(fn=failing_fn, name="failing_prompt")
     manager.add_prompt(prompt)
 
-    with pytest.raises(Exception):
+    with pytest.raises(TestError):
         await manager.render_prompt("failing_prompt", {"text": "test"})
 
     metrics = manager.get_prompt_metrics("failing_prompt")
+    assert metrics is not None
     assert metrics.total_calls == 1
     assert metrics.successful_calls == 0
     assert metrics.failed_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_concurrent_rendering(manager, sample_prompt):
+async def test_concurrent_rendering(
+    manager: PromptManager, sample_prompt: Prompt
+) -> None:
     """Test concurrent prompt rendering."""
 
     async def slow_fn(text: str) -> str:
@@ -153,7 +174,7 @@ async def test_concurrent_rendering(manager, sample_prompt):
 
 
 @pytest.mark.asyncio
-async def test_render_timeout(manager):
+async def test_render_timeout(manager: PromptManager) -> None:
     """Test prompt rendering with timeout."""
 
     async def slow_fn(text: str) -> str:

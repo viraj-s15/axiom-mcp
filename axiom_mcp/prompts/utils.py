@@ -1,288 +1,202 @@
-"""Utility functions for prompt management."""
+"""Utility functions and classes for prompt management."""
 
+import asyncio
 import inspect
-import types
-from collections.abc import Callable
-from functools import update_wrapper
-from typing import Any, Protocol, TypeGuard, TypeVar, cast, runtime_checkable
+from collections.abc import Awaitable, Callable, Sequence
+from datetime import UTC, datetime
+from functools import wraps
+from typing import Any, Generic, ParamSpec, TypeVar, cast, get_type_hints, overload
 
-from .base import AssistantMessage, Message, Prompt, PromptArgument, UserMessage
-from .manager import PromptManager
+from pydantic import BaseModel, ConfigDict, Field
 
-F = TypeVar("F", bound=Callable[..., Any])
+from axiom_mcp.exceptions import PromptRenderError
 
+from .base import Message, Prompt
 
-@runtime_checkable
-class PromptCallable(Protocol):
-    """Protocol for prompt-decorated functions."""
-
-    _prompt: Prompt
-    _fn: Callable[..., Any]
-
-    def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
+T = TypeVar("T")
+P = ParamSpec("P")
 
 
-def is_prompt_function(obj: Any) -> TypeGuard[PromptCallable]:
-    """Type guard to check if an object is a prompt function."""
-    return isinstance(obj, PromptCallable)
+class FunctionInfo(BaseModel):
+    """Information about an executable function."""
+
+    name: str
+    description: str | None = None
+    source: str | None = None
+    return_type: str
+    parameters: dict[str, tuple[str, Any]] = Field(default_factory=dict)
+    is_async: bool = False
+    is_generator: bool = False
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
-class PromptWrapped:
-    """Concrete implementation of prompt-decorated functions."""
+class ExecutableFunction(Generic[P, T]):
+    """A wrapper for executable functions with metadata."""
 
-    _prompt: Prompt
-    _fn: Callable[..., Any]
+    def __init__(self, fn: Callable[P, T], name: str | None = None) -> None:
+        self.fn = fn
+        self.name = name or fn.__name__
+        self.info = self._create_function_info()
 
-    def __init__(self, fn: Callable[..., Any], prompt_obj: Prompt) -> None:
-        self._prompt = prompt_obj
-        self._fn = fn
-        update_wrapper(self, fn)
+    def _create_function_info(self) -> FunctionInfo:
+        """Create function info from inspection."""
+        sig = inspect.signature(self.fn)
+        type_hints = get_type_hints(self.fn)
+        return_type = type_hints.get("return", Any).__name__
+        parameters = {
+            name: (param.annotation.__name__, param.default)
+            for name, param in sig.parameters.items()
+        }
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        return self._fn(*args, **kwargs)
+        return FunctionInfo(
+            name=self.name,
+            description=self.fn.__doc__,
+            source=inspect.getsource(self.fn),
+            return_type=return_type,
+            parameters=parameters,
+            is_async=asyncio.iscoroutinefunction(self.fn),
+            is_generator=inspect.isgeneratorfunction(self.fn),
+        )
+
+    async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
+        """Execute the function with given arguments."""
+        if self.info.is_async:
+            return await cast(Callable[P, Awaitable[T]], self.fn)(*args, **kwargs)
+        return cast(Callable[P, T], self.fn)(*args, **kwargs)
+
+
+class FunctionRegistry:
+    """Registry for executable functions with metadata."""
+
+    def __init__(self) -> None:
+        self._functions: dict[str, ExecutableFunction[Any, Any]] = {}
+        self._prompts: dict[str, Prompt] = {}
+
+    @overload
+    def register(
+        self, fn: None = None, *, name: str | None = None
+    ) -> Callable[[Callable[P, T]], ExecutableFunction[P, T]]: ...
+
+    @overload
+    def register(
+        self, fn: Callable[P, T], *, name: str | None = None
+    ) -> ExecutableFunction[P, T]: ...
+
+    def register(
+        self, fn: Callable[P, T] | None = None, *, name: str | None = None
+    ) -> (
+        Callable[[Callable[P, T]], ExecutableFunction[P, T]] | ExecutableFunction[P, T]
+    ):
+        """Register a function or return a decorator."""
+        if fn is None:
+            return lambda f: self.register(f, name=name)
+
+        func = ExecutableFunction(fn, name)
+        self._functions[func.name] = func
+        return func
+
+    def unregister(self, name: str) -> None:
+        """Remove a function from the registry."""
+        self._functions.pop(name, None)
+
+    def get(self, name: str) -> ExecutableFunction[Any, Any] | None:
+        """Get a registered function by name."""
+        return self._functions.get(name)
+
+    def list_functions(self) -> dict[str, FunctionInfo]:
+        """List all registered functions."""
+        return {name: func.info for name, func in self._functions.items()}
+
+    async def execute(
+        self, name: str, args: dict[str, Any] | None = None
+    ) -> list[Message]:
+        """Execute a registered function with given arguments."""
+        func = self.get(name)
+        if not func:
+            raise PromptRenderError(name, f"Function {name} not found")
+
+        args = args or {}
+        result = await func(**args)
+
+        if not isinstance(result, list | tuple):
+            result = [result]
+
+        return [
+            msg if isinstance(msg, Message) else Message(content=msg, role="assistant")
+            for msg in result
+        ]
+
+    def add_prompt(self, prompt: Prompt) -> None:
+        """Add a prompt to the registry."""
+        self._prompts[prompt.name] = prompt
+
+    def get_prompt(self, name: str) -> Prompt | None:
+        """Get a prompt by name."""
+        return self._prompts.get(name)
 
 
 def prompt(
-    func: F | None = None,
-    *,
     name: str | None = None,
     description: str | None = None,
-    version: str = "1.0.0",
     tags: list[str] | None = None,
-    manager: PromptManager | None = None,
-) -> Callable[[F], F] | F:
-    """Decorator to create and optionally register a prompt from a function.
+) -> Callable[
+    [Callable[..., str | Message | Sequence[str | Message]]],
+    Callable[..., str | Message | Sequence[str | Message]],
+]:
+    """Decorator to create a prompt from a function."""
 
-    Examples:
-        @prompt(name="greeting", tags=["basic"])
-        def greet(name: str) -> str:
-            return f"Hello {name}!"
+    def decorator(
+        fn: Callable[..., str | Message | Sequence[str | Message]],
+    ) -> Callable[..., str | Message | Sequence[str | Message]]:
+        @wraps(fn)
+        def wrapper(
+            *args: Any, **kwargs: Any
+        ) -> str | Message | Sequence[str | Message]:
+            return fn(*args, **kwargs)
 
-        @prompt(tags=["math"])
-        async def calculate(x: float, y: float, operation: str = "add") -> str:
-            ops = {
-                "add": lambda a, b: a + b,
-                "multiply": lambda a, b: a * b
-            }
-            result = ops[operation](x, y)
-            return f"The result of {operation} is {result}"
-    """
-
-    def decorator(fn: F) -> F:
-        if not callable(fn):
-            raise ValueError("Decorator must be applied to a callable")
-
-        prompt_obj = Prompt.from_function(
-            fn, name=name, description=description, version=version, tags=tags
+        prompt = Prompt.from_function(
+            fn=wrapper,
+            name=name or fn.__name__,
+            description=description or fn.__doc__,
+            tags=tags or [],
         )
+        registry.add_prompt(prompt)
+        return wrapper
 
-        if manager is not None:
-            manager.add_prompt(prompt_obj)
-
-        # Create a new subclass for this specific function
-        wrapper_cls = types.new_class(
-            f"Prompt{fn.__name__.title()}",
-            bases=(PromptWrapped,),
-            exec_body=lambda ns: ns.update(
-                {
-                    "__module__": fn.__module__,
-                    "__doc__": fn.__doc__,
-                }
-            ),
-        )
-
-        # Create an instance and update its wrapper attributes
-        wrapper = wrapper_cls(fn, prompt_obj)
-
-        if inspect.iscoroutinefunction(fn):
-
-            async def async_call(*args: Any, **kwargs: Any) -> Any:
-                result = fn(*args, **kwargs)
-                if inspect.iscoroutine(result):
-                    return await result
-                return result
-
-            wrapper.__call__ = async_call.__get__(wrapper, wrapper_cls)
-
-        return cast(F, wrapper)
-
-    if func is None:
-        return decorator
-    return decorator(func)
+    return decorator
 
 
-def batch_register(manager: PromptManager, *prompts: Prompt | Callable) -> list[Prompt]:
-    """Register multiple prompts at once.
-
-    Examples:
-        @prompt(name="greet")
-        def greet(name: str) -> str:
-            return f"Hello {name}!"
-
-        @prompt(name="farewell")
-        def farewell(name: str) -> str:
-            return f"Goodbye {name}!"
-
-        registered = batch_register(manager, greet, farewell)
-    """
-    registered = []
+def batch_register(*prompts: Prompt) -> None:
+    """Register multiple prompts at once."""
     for p in prompts:
-        if is_prompt_function(p):
-            prompt_obj = p._prompt
-        elif isinstance(p, Prompt):
-            prompt_obj = p
-        else:
-            raise ValueError(f"Invalid prompt type: {type(p)}")
-
-        registered.append(manager.add_prompt(prompt_obj))
-    return registered
+        registry.add_prompt(p)
 
 
-def combine_prompts(
-    *funcs: Callable,
-    name: str | None = None,
-    description: str | None = None,
-    version: str = "1.0.0",
-    tags: list[str] | None = None,
-) -> Prompt:
-    """Combine multiple prompt functions into a single prompt.
+def combine_prompts(*prompt_funcs: Callable[..., Any]) -> Prompt:
+    """Combine multiple prompt functions into a single prompt."""
 
-    The resulting prompt will execute functions based on the following rules:
-    1. If any function has an exact match for all its required arguments, run only those functions
-    2. If no function has required arguments that match exactly, run all functions with no required args
-    """
-
-    async def combined_func(**kwargs: Any) -> list[Message]:
-        messages = []
-        exact_match_funcs = []
-        no_required_funcs = []
-        for func in funcs:
-            if is_prompt_function(func):
-                prompt_obj = func._prompt
-                try:
-                    valid_args = {
-                        k: v
-                        for k, v in kwargs.items()
-                        if k in [arg.name for arg in prompt_obj.arguments]
-                    }
-
-                    required_args = [
-                        arg.name for arg in prompt_obj.arguments if arg.required
-                    ]
-
-                    if required_args and all(
-                        arg in valid_args for arg in required_args
-                    ):
-                        exact_match_funcs.append((func, valid_args))
-                    elif not required_args:
-                        no_required_funcs.append((func, valid_args))
-                except Exception:
-                    continue
-            else:
-                try:
-                    sig = inspect.signature(func)
-                    valid_params = {
-                        k: v for k, v in kwargs.items() if k in sig.parameters
-                    }
-
-                    required_params = {
-                        k for k, v in sig.parameters.items() if v.default == v.empty
-                    }
-
-                    if required_params and all(
-                        p in valid_params for p in required_params
-                    ):
-                        exact_match_funcs.append((func, valid_params))
-                    elif not required_params:
-                        no_required_funcs.append((func, valid_params))
-                except Exception:
-                    continue
-
-        # Second pass - execute functions
-        funcs_to_run = exact_match_funcs if exact_match_funcs else no_required_funcs
-
-        for func, args in funcs_to_run:
-            try:
-                if is_prompt_function(func):
-                    result = await func._prompt.render(args)
-                else:
-                    result = func(**args)
-                    if inspect.iscoroutine(result):
-                        result = await result
-
-                    if isinstance(result, (str, Message)) or isinstance(result, dict):
-                        result = [result]
-                    else:
-                        result = list(result)
-
+    def combined(**kwargs: Any) -> Sequence[Message]:
+        messages: list[Message] = []
+        for fn in prompt_funcs:
+            result = fn(**kwargs)
+            if isinstance(result, list | tuple):
                 messages.extend(result)
-            except Exception:
-                continue
-
-        # Convert any non-Message objects to Messages
-        final_messages = []
-        for msg in messages:
-            if isinstance(msg, Message):
-                final_messages.append(msg)
-            elif isinstance(msg, str):
-                final_messages.append(UserMessage(role="user", content=msg))
-            elif isinstance(msg, dict):
-                final_messages.append(AssistantMessage(role="assistant", **msg))
             else:
-                final_messages.append(UserMessage(role="user", content=str(msg)))
+                messages.append(Message(content=str(result), role="assistant"))
+        return messages
 
-        if not final_messages:
-            raise ValueError(
-                "No functions could be executed with the provided arguments"
-            )
-
-        return final_messages
-
-    arg_map = {}
-    func_args = {}
-
-    for func in funcs:
-        if is_prompt_function(func):
-            prompt_obj = func._prompt
-            func_name = prompt_obj.name
-            func_args[func_name] = set()
-
-            for arg in prompt_obj.arguments:
-                func_args[func_name].add(arg.name)
-                if arg.name not in arg_map:
-                    arg_map[arg.name] = PromptArgument(
-                        name=arg.name,
-                        description=arg.description,
-                        required=False,
-                        type_hint=arg.type_hint,
-                        default=arg.default or None,
-                    )
-        else:
-            sig = inspect.signature(func)
-            func_name = func.__name__
-            func_args[func_name] = set()
-
-            for param_name, param in sig.parameters.items():
-                func_args[func_name].add(param_name)
-                if param_name not in arg_map:
-                    arg_map[param_name] = PromptArgument(
-                        name=param_name,
-                        description=f"Parameter {param_name} for function {func_name}",
-                        required=False,
-                        type_hint=(
-                            param.annotation.__name__
-                            if param.annotation != param.empty
-                            else "Any"
-                        ),
-                        default=None,
-                    )
-
-    prompt_name = name or "_".join(f.__name__ for f in funcs)
-    return Prompt(
-        name=prompt_name,
-        description=description,
-        version=version,
-        arguments=list(arg_map.values()),
-        tags=tags or [],
-        fn=combined_func,
+    # Use the name and doc of the first function as default
+    first_func = prompt_funcs[0]
+    names = ", ".join(f.__name__ for f in prompt_funcs)
+    return Prompt.from_function(
+        fn=combined,
+        name=f"combined_{first_func.__name__}",
+        description=f"Combined prompt from {names}",
+        tags=["combined"],
     )
+
+
+# Global registry instance
+registry = FunctionRegistry()

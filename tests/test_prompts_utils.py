@@ -1,188 +1,165 @@
-"""Tests for prompt utilities and decorators."""
+"""Tests for prompt utilities."""
+
+import asyncio
+from collections.abc import Callable
 
 import pytest
-from mcp.types import TextContent as MCPTextContent
+from pytest import FixtureRequest
 
-from axiom_mcp.prompts.base import Message, Prompt, SystemMessage, UserMessage
-from axiom_mcp.prompts.manager import PromptManager
-from axiom_mcp.prompts.utils import batch_register, combine_prompts, prompt
+from axiom_mcp.exceptions import PromptRenderError
+from axiom_mcp.prompts.base import Message
+from axiom_mcp.prompts.utils import ExecutableFunction, FunctionRegistry, registry
 
 
 @pytest.fixture
-def manager():
-    """Create a test prompt manager."""
-    return PromptManager(warn_on_duplicate=True)
+def registry_instance(_: FixtureRequest) -> FunctionRegistry:
+    """Create a clean registry for testing."""
+    return FunctionRegistry()
 
 
-def test_prompt_decorator_basic():
-    """Test basic prompt decorator functionality."""
+@pytest.fixture
+def example_function(_: FixtureRequest) -> Callable[[str], str]:
+    """Create an example function for testing."""
 
-    @prompt(name="test", description="Test prompt", version="1.0.0", tags=["test"])
-    def test_fn(name: str) -> str:
-        return f"Hello {name}"
+    def func(text: str) -> str:
+        return f"Test: {text}"
 
-    assert hasattr(test_fn, "_prompt")
-    prompt_obj = test_fn._prompt  # type: ignore
-    assert isinstance(prompt_obj, Prompt)
-    assert prompt_obj.name == "test"
-    assert prompt_obj.description == "Test prompt"
-    assert prompt_obj.version == "1.0.0"
-    assert prompt_obj.tags == ["test"]
+    return func
 
 
-def test_prompt_decorator_auto_name():
-    """Test prompt decorator with automatic name from function."""
-
-    @prompt()
-    def auto_named_fn(text: str) -> str:
-        return text
-
-    prompt_obj = auto_named_fn._prompt  # type: ignore
-    assert prompt_obj.name == "auto_named_fn"
+def test_function_info(
+    registry_instance: FunctionRegistry, example_function: Callable[[str], str]
+) -> None:
+    """Test function info creation."""
+    func = ExecutableFunction(example_function)
+    assert func.name == "func"
+    assert func.info.parameters
 
 
-def test_prompt_decorator_with_manager(manager):
-    """Test prompt decorator with manager integration."""
-
-    @prompt(name="managed", manager=manager)
-    def managed_fn(text: str) -> str:
-        return text
-
-    assert manager.get_prompt("managed") is not None
-    assert managed_fn("test") == "test"
+def test_register_function(
+    registry_instance: FunctionRegistry, example_function: Callable[[str], str]
+) -> None:
+    """Test function registration."""
+    func = registry_instance.register(example_function)
+    assert isinstance(func, ExecutableFunction)
+    assert registry_instance.get("func") is not None
 
 
-def test_batch_register(manager):
-    """Test batch registration of prompts."""
-
-    @prompt(name="first")
-    def first_fn(text: str) -> str:
-        return f"First: {text}"
-
-    @prompt(name="second")
-    def second_fn(text: str) -> str:
-        return f"Second: {text}"
-
-    registered = batch_register(manager, first_fn, second_fn)
-    assert len(registered) == 2
-    assert all(isinstance(p, Prompt) for p in registered)
-    assert manager.get_prompt("first") is not None
-    assert manager.get_prompt("second") is not None
+def test_register_with_name(
+    registry_instance: FunctionRegistry, example_function: Callable[[str], str]
+) -> None:
+    """Test function registration with custom name."""
+    func = registry_instance.register(example_function, name="custom")
+    assert func.name == "custom"
+    assert registry_instance.get("custom") is not None
 
 
-def test_batch_register_mixed_types(manager):
-    """Test batch registration with mixed prompt types."""
+def test_register_decorator(registry_instance: FunctionRegistry) -> None:
+    """Test registration as decorator."""
 
-    @prompt(name="decorated")
+    @registry_instance.register(name="decorated")
     def decorated_fn(text: str) -> str:
         return text
 
-    direct_prompt = Prompt.from_function(
-        lambda x: x, name="direct", description="Direct prompt"
-    )
-
-    registered = batch_register(manager, decorated_fn, direct_prompt)
-    assert len(registered) == 2
-    assert manager.get_prompt("decorated") is not None
-    assert manager.get_prompt("direct") is not None
+    assert registry_instance.get("decorated") is not None
 
 
-def test_batch_register_invalid_type(manager):
-    """Test batch registration with invalid type."""
-    with pytest.raises(ValueError, match="Invalid prompt type"):
-        batch_register(manager, lambda x: x)
+def test_unregister_function(
+    registry_instance: FunctionRegistry, example_function: Callable[[str], str]
+) -> None:
+    """Test function unregistration."""
+    registry_instance.register(example_function)
+    registry_instance.unregister("func")
+    assert registry_instance.get("func") is None
 
 
-@pytest.mark.asyncio
-async def test_combine_prompts():
-    """Test combining multiple prompts."""
-
-    @prompt()
-    def context() -> Message:
-        return SystemMessage(content="System context", role="system")
-
-    @prompt()
-    def greeting(name: str) -> Message:
-        return UserMessage(content=f"Hello {name}", role="user")
-
-    combined = combine_prompts(
-        context, greeting, name="full_greeting", tags=["greeting"]
-    )
-
-    assert combined.name == "full_greeting"
-    assert "greeting" in combined.tags
-
-    # First render without args for context
-    result = await combined.render({})
-    assert len(result) == 1
-    assert isinstance(result[0], SystemMessage)
-    assert isinstance(result[0].content, MCPTextContent)
-    assert result[0].content.text == "System context"
-
-    # Then render with name for greeting
-    result = await combined.render({"name": "Test"})
-    assert len(result) == 1
-    assert isinstance(result[0], UserMessage)
-    assert isinstance(result[0].content, MCPTextContent)
-    assert result[0].content.text == "Hello Test"
+def test_list_functions(
+    registry_instance: FunctionRegistry, example_function: Callable[[str], str]
+) -> None:
+    """Test listing registered functions."""
+    registry_instance.register(example_function)
+    functions = registry_instance.list_functions()
+    assert len(functions) == 1
+    assert "func" in functions
 
 
 @pytest.mark.asyncio
-async def test_combine_prompts_partial_args():
-    """Test combining prompts with partial argument matching."""
+async def test_execute_function(
+    _: FixtureRequest, registry_instance: FunctionRegistry
+) -> None:
+    """Test function execution."""
 
-    @prompt()
-    def first(a: str) -> str:
-        return f"First: {a}"
+    @registry_instance.register
+    def test_fn() -> Message:
+        return Message(content="test", role="assistant")
 
-    @prompt()
-    def second(b: str) -> str:
-        return f"Second: {b}"
-
-    combined = combine_prompts(first, second, name="first_second")
-
-    # Test first prompt
-    result = await combined.render({"a": "A"})
+    result = await registry_instance.execute("test_fn")
     assert len(result) == 1
-    assert isinstance(result[0].content, MCPTextContent)
-    assert result[0].content.text == "First: A"
-
-    # Test second prompt
-    result = await combined.render({"b": "B"})
-    assert len(result) == 1
-    assert isinstance(result[0].content, MCPTextContent)
-    assert result[0].content.text == "Second: B"
+    assert isinstance(result[0], Message)
+    assert str(result[0]) == "test"
 
 
 @pytest.mark.asyncio
-async def test_combine_prompts_async():
-    """Test combining async and sync prompts."""
+async def test_execute_with_args(
+    _: FixtureRequest, registry_instance: FunctionRegistry
+) -> None:
+    """Test function execution with arguments."""
 
-    @prompt()
+    @registry_instance.register
+    def test_fn(text: str) -> Message:
+        return Message(content=text, role="assistant")
+
+    result = await registry_instance.execute("test_fn", {"text": "hello"})
+    assert len(result) == 1
+    assert str(result[0]) == "hello"
+
+
+@pytest.mark.asyncio
+async def test_execute_async_function(
+    _: FixtureRequest, registry_instance: FunctionRegistry
+) -> None:
+    """Test async function execution."""
+
+    @registry_instance.register
     async def async_fn() -> str:
-        return "Async"
+        await asyncio.sleep(0.1)
+        return "async test"
 
-    @prompt()
+    result = await registry_instance.execute("async_fn")
+    assert len(result) == 1
+    assert str(result[0]) == "async test"
+
+
+@pytest.mark.asyncio
+async def test_execute_sync_function(
+    _: FixtureRequest, registry_instance: FunctionRegistry
+) -> None:
+    """Test synchronous function execution."""
+
+    @registry_instance.register
     def sync_fn() -> str:
-        return "Sync"
+        return "sync test"
 
-    combined = combine_prompts(async_fn, sync_fn)
-    result = await combined.render()
-    assert len(result) == 2
-    assert isinstance(result[0].content, MCPTextContent)
-    assert isinstance(result[1].content, MCPTextContent)
-    assert result[0].content.text == "Async"
-    assert result[1].content.text == "Sync"
+    result = await registry_instance.execute("sync_fn")
+    assert len(result) == 1
+    assert str(result[0]) == "sync test"
 
 
-def test_prompt_decorator_docstring():
-    """Test prompt decorator preserves function docstring."""
+@pytest.mark.asyncio
+async def test_execute_nonexistent(
+    _: FixtureRequest, registry_instance: FunctionRegistry
+) -> None:
+    """Test executing nonexistent function."""
+    with pytest.raises(PromptRenderError):
+        await registry_instance.execute("nonexistent")
 
-    @prompt()
-    def documented_fn(text: str) -> str:
-        """This is a test docstring."""
+
+def test_global_registry() -> None:
+    """Test global registry instance."""
+
+    @registry.register
+    def test_fn(text: str) -> str:
         return text
 
-    prompt_obj = documented_fn._prompt  # type: ignore
-    assert prompt_obj.description == "This is a test docstring."
-    assert documented_fn.__doc__ == "This is a test docstring."
+    assert registry.get("test_fn") is not None
+    registry.unregister("test_fn")

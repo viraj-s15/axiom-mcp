@@ -45,17 +45,14 @@ line-length = 88
 target-version = ['py312']
 include = '\.pyi?$'
 
-[tool.isort]
-profile = "black"
-multi_line_output = 3
-
-[tool.mypy]
-python_version = "3.12"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
-
 [tool.ruff]
 select = ["E", "F", "B", "I"]
 line-length = 88
 target-version = "py312"
+fix = true
+
+[tool.ruff.isort]
+known-first-party = ["axiom_mcp"]
+combine-as-imports = true
+force-wrap-aliases = true
+profile = "black"

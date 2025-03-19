@@ -6,15 +6,16 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel as PydanticBaseModel
+from pydantic import ConfigDict, Field
 
-from ..exceptions import AxiomMCPError
+from ..exceptions import UnknownPromptError
 from .base import Message, Prompt
 
 logger = logging.getLogger(__name__)
 
 
-class PromptMetrics(BaseModel):
+class PromptMetrics(PydanticBaseModel):
     """Metrics for prompt usage and performance."""
 
     total_calls: int = Field(default=0)
@@ -111,48 +112,38 @@ class PromptManager:
         return self._metrics.get(name)
 
     async def render_prompt(
-        self,
-        name: str,
-        arguments: dict[str, Any] | None = None,
-        timeout: float | None = None,
+        self, name: str, arguments: dict[str, Any] | None = None
     ) -> list[Message]:
-        """Render a prompt with enhanced error handling and metrics."""
+        """Render a prompt with the given arguments.
+
+        Args:
+            name: Name of the prompt to render
+            arguments: Arguments to pass to the prompt
+
+        Returns:
+            A list of rendered messages
+
+        Raises:
+            UnknownPromptError: If the prompt doesn't exist
+            PromptRenderError: If there's an error rendering the prompt
+        """
         prompt = self.get_prompt(name)
         if not prompt:
-            raise ValueError(f"Unknown prompt: {name}")
+            raise UnknownPromptError(name)
 
         start_time = datetime.now(UTC)
 
         try:
-            async with self._render_semaphore:
-                # Handle timeout
-                if timeout:
-                    messages = await asyncio.wait_for(
-                        prompt.render(arguments), timeout=timeout
-                    )
-                else:
-                    messages = await prompt.render(arguments)
-
-            if self.enable_metrics:
-                self._update_metrics(name, start_time, success=True)
-
-            return messages
-
+            messages = await prompt.render(arguments)
         except TimeoutError:
-            if self.enable_metrics:
-                self._update_metrics(name, start_time, success=False)
-            raise AxiomMCPError(
-                f"Prompt rendering timed out after {timeout} seconds",
-                details={"prompt_name": name},
-            )
+            self._update_metrics(name, start_time, success=False)
+            raise
         except Exception as e:
-            if self.enable_metrics:
-                self._update_metrics(name, start_time, success=False)
-            raise AxiomMCPError(
-                f"Error rendering prompt: {str(e)}",
-                details={"prompt_name": name},
-                cause=e,
-            )
+            self._update_metrics(name, start_time, success=False)
+            raise e from None
+        else:
+            self._update_metrics(name, start_time, success=True)
+            return messages
 
     def _update_metrics(
         self, prompt_name: str, start_time: datetime, success: bool

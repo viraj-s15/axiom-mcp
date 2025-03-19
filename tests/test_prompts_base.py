@@ -1,17 +1,16 @@
-"""Tests for prompt base classes and functionality."""
+from __future__ import annotations
 
+import asyncio
 import base64
 from datetime import datetime
 
 import pytest
+from mcp.types import EmbeddedResource, ImageContent, TextResourceContents
 from mcp.types import TextContent as MCPTextContent
-from mcp.types import TextResourceContents
 from pydantic import AnyUrl
 
 from axiom_mcp.prompts.base import (
     AssistantMessage,
-    EmbeddedResource,
-    ImageContent,
     Message,
     Prompt,
     SystemMessage,
@@ -19,7 +18,7 @@ from axiom_mcp.prompts.base import (
 )
 
 
-def test_message_with_string_content():
+def test_message_with_string_content() -> None:
     """Test message creation with string content."""
     msg = Message(content=MCPTextContent(type="text", text="Hello"), role="user")
     assert isinstance(msg.content, MCPTextContent)
@@ -28,7 +27,7 @@ def test_message_with_string_content():
     assert isinstance(msg.timestamp, datetime)
 
 
-def test_message_with_text_content():
+def test_message_with_text_content() -> None:
     """Test message creation with TextContent."""
     content = MCPTextContent(type="text", text="Hello")
     msg = Message(content=content, role="user")
@@ -36,7 +35,7 @@ def test_message_with_text_content():
     assert msg.role == "user"
 
 
-def test_message_with_image_content():
+def test_message_with_image_content() -> None:
     """Test message creation with ImageContent."""
     # Convert test image data to base64 string as required
     image_data = base64.b64encode(b"image data").decode("utf-8")
@@ -46,7 +45,7 @@ def test_message_with_image_content():
     assert msg.role == "assistant"
 
 
-def test_message_with_embedded_resource():
+def test_message_with_embedded_resource() -> None:
     """Test message creation with EmbeddedResource."""
     resource_content = TextResourceContents(
         text="Sample text content",
@@ -59,7 +58,7 @@ def test_message_with_embedded_resource():
     assert msg.role == "system"
 
 
-def test_message_metadata():
+def test_message_metadata() -> None:
     """Test message metadata handling."""
     metadata = {"source": "test", "priority": 1}
     msg = Message(
@@ -70,7 +69,7 @@ def test_message_metadata():
     assert msg.metadata == metadata
 
 
-def test_specific_message_types():
+def test_specific_message_types() -> None:
     """Test user, assistant, and system message types."""
     user_msg = UserMessage(content="User input", role="user")
     assert user_msg.role == "user"
@@ -82,8 +81,11 @@ def test_specific_message_types():
     assert system_msg.role == "system"
 
 
+pytestmark = pytest.mark.asyncio
+
+
 @pytest.mark.asyncio
-async def test_prompt_creation():
+async def test_prompt_creation(_: pytest.FixtureRequest) -> None:
     """Test prompt creation and basic functionality."""
 
     def example_fn(name: str, age: int = 0) -> str:
@@ -115,7 +117,7 @@ async def test_prompt_creation():
 
 
 @pytest.mark.asyncio
-async def test_prompt_rendering():
+async def test_prompt_rendering(_: pytest.FixtureRequest) -> None:
     """Test prompt rendering with different return types."""
 
     def text_fn(text: str) -> str:
@@ -160,7 +162,7 @@ async def test_prompt_rendering():
 
 
 @pytest.mark.asyncio
-async def test_prompt_validation():
+async def test_prompt_validation(_: pytest.FixtureRequest) -> None:
     """Test prompt validation and error handling."""
 
     def example_fn(required_arg: str) -> str:
@@ -175,7 +177,7 @@ async def test_prompt_validation():
         await prompt.render({"wrong_arg": "value"})
 
 
-def test_lambda_prompt_creation():
+def test_lambda_prompt_creation() -> None:
     """Test that lambda functions are not allowed without names."""
     with pytest.raises(
         ValueError, match="Lambda functions must be provided with a name"
@@ -184,7 +186,7 @@ def test_lambda_prompt_creation():
 
 
 @pytest.mark.asyncio
-async def test_async_prompt():
+async def test_async_prompt(_: pytest.FixtureRequest) -> None:
     """Test async prompt functions."""
 
     async def async_fn(text: str) -> str:
@@ -197,7 +199,7 @@ async def test_async_prompt():
     assert result[0].content.text == "Async: Hello"
 
 
-def test_prompt_timestamps():
+def test_prompt_timestamps() -> None:
     """Test prompt creation and update timestamps."""
 
     def example_fn() -> str:
@@ -207,3 +209,30 @@ def test_prompt_timestamps():
     assert isinstance(prompt.created_at, datetime)
     assert isinstance(prompt.updated_at, datetime)
     assert prompt.created_at <= prompt.updated_at
+
+
+@pytest.fixture
+def sample_message(_: pytest.FixtureRequest) -> Message:
+    """Create a sample message for testing."""
+    return Message(content="Test message", role="user")
+
+
+@pytest.fixture
+def sample_prompt(_: pytest.FixtureRequest) -> Prompt:
+    """Create a sample prompt for testing."""
+
+    def test_prompt() -> str:
+        return "Test response"
+
+    return Prompt.from_function(fn=test_prompt)
+
+
+@pytest.fixture
+def async_prompt(_: pytest.FixtureRequest) -> Prompt:
+    """Create an async prompt for testing."""
+
+    async def test_prompt() -> str:
+        await asyncio.sleep(0.1)
+        return "Async test response"
+
+    return Prompt.from_function(fn=test_prompt)
