@@ -227,11 +227,9 @@ def combine_prompts(
             elif isinstance(msg, str):
                 final_messages.append(UserMessage(role="user", content=msg))
             elif isinstance(msg, dict):
-                final_messages.append(
-                    AssistantMessage(role="assistant", **msg))
+                final_messages.append(AssistantMessage(role="assistant", **msg))
             else:
-                final_messages.append(UserMessage(
-                    role="user", content=str(msg)))
+                final_messages.append(UserMessage(role="user", content=str(msg)))
 
         if not final_messages:
             raise ValueError(

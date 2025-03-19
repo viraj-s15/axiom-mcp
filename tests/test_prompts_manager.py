@@ -4,7 +4,6 @@ import asyncio
 
 import pytest
 
-from axiom_mcp.exceptions import AxiomMCPError
 from axiom_mcp.prompts.base import Prompt
 from axiom_mcp.prompts.manager import PromptManager, PromptMetrics
 

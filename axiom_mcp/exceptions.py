@@ -190,3 +190,17 @@ class ModelResponseError(ModelError):
         if response_type:
             details["response_type"] = response_type
         super().__init__(message, details=details, **kwargs)
+
+
+class LambdaNameError(AxiomMCPError):
+    """Raised when a lambda function is provided without a name."""
+
+    def __init__(self):
+        super().__init__("Lambda functions must be provided with a name")
+
+
+class MissingArgumentsError(AxiomMCPError):
+    """Raised when required arguments are missing."""
+
+    def __init__(self, missing_args: list[str]):
+        super().__init__(f"Missing required arguments: {', '.join(missing_args)}")

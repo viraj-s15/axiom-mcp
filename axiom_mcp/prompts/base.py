@@ -1,15 +1,16 @@
 import inspect
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
-from typing import Any, Literal, Protocol, Union
+from typing import Any, Literal, Protocol
 
 from mcp.types import EmbeddedResource, ImageContent
 from mcp.types import TextContent as MCPTextContent
 from pydantic import BaseModel, ConfigDict, Field, validate_call
 from typing_extensions import runtime_checkable
 
-ContentType = Union[str, dict[str,
-                         Any], MCPTextContent, ImageContent, EmbeddedResource]
+from axiom_mcp.exceptions import LambdaNameError, MissingArgumentsError
+
+ContentType = str | dict[str, Any] | MCPTextContent | ImageContent | EmbeddedResource
 
 
 class Message(BaseModel):
@@ -53,8 +54,7 @@ class UserMessage(Message):
 class AssistantMessage(Message):
     """A message from the assistant."""
 
-    role: Literal["user", "assistant", "system"] = Field(
-        "assistant", frozen=True)
+    role: Literal["user", "assistant", "system"] = Field("assistant", frozen=True)
 
 
 class SystemMessage(Message):
@@ -119,7 +119,7 @@ class Prompt(BaseModel):
     ) -> "Prompt":
         func_name = name or fn.__name__
         if func_name == "<lambda>":
-            raise ValueError("Lambda functions must be provided with a name")
+            raise LambdaNameError()
 
         sig = inspect.signature(fn)
         type_hints = inspect.get_annotations(fn)
@@ -151,6 +151,23 @@ class Prompt(BaseModel):
             fn=validated_fn,
         )
 
+    def _create_message(self, msg: Any) -> Message:
+        """Create a Message instance from various input types."""
+        if isinstance(msg, Message):
+            return msg
+        if isinstance(msg, dict):
+            role = msg.get("role", "user")
+            if role == "user":
+                return UserMessage(**msg)
+            if role == "assistant":
+                return AssistantMessage(**msg)
+            if role == "system":
+                return SystemMessage(**msg)
+            raise ValueError(f"Invalid message role: {role}")
+        if isinstance(msg, str):
+            return UserMessage(role="user", content=msg)
+        return UserMessage(role="user", content=str(msg))
+
     async def render(self, arguments: dict[str, Any] | None = None) -> list[Message]:
         arguments = arguments or {}
 
@@ -160,8 +177,7 @@ class Prompt(BaseModel):
             if arg.required and arg.name not in arguments
         ]
         if missing:
-            raise ValueError(
-                f"Missing required arguments: {', '.join(missing)}")
+            raise MissingArgumentsError(missing)
 
         try:
             result = self.fn(**arguments)
@@ -171,27 +187,7 @@ class Prompt(BaseModel):
             if not isinstance(result, (list, tuple)):
                 result = [result]
 
-            messages = []
-            for msg in result:
-                if isinstance(msg, Message):
-                    messages.append(msg)
-                elif isinstance(msg, dict):
-                    role = msg.get("role", "user")
-                    if role == "user":
-                        messages.append(UserMessage(**msg))
-                    elif role == "assistant":
-                        messages.append(AssistantMessage(**msg))
-                    elif role == "system":
-                        messages.append(SystemMessage(**msg))
-                    else:
-                        raise ValueError(f"Invalid message role: {role}")
-                elif isinstance(msg, str):
-                    messages.append(UserMessage(role="user", content=msg))
-                else:
-                    messages.append(UserMessage(role="user", content=str(msg)))
-
-            return messages
+            return [self._create_message(msg) for msg in result]
 
         except Exception as e:
-            raise ValueError(
-                f"Error rendering prompt '{self.name}': {str(e)}") from e
+            raise ValueError(f"Error rendering prompt '{self.name}': {str(e)}") from e
