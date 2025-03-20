@@ -141,11 +141,19 @@ def prompt(
     name: str | None = None,
     description: str | None = None,
     tags: list[str] | None = None,
+    registry: FunctionRegistry | None = None,
 ) -> Callable[
     [Callable[..., str | Message | Sequence[str | Message]]],
     Callable[..., str | Message | Sequence[str | Message]],
 ]:
-    """Decorator to create a prompt from a function."""
+    """Decorator to create a prompt from a function.
+
+    Args:
+        name: Optional name for the prompt (defaults to function name)
+        description: Optional description (defaults to function docstring)
+        tags: Optional list of tags for categorizing prompts
+        registry: Optional registry to use (defaults to global registry)
+    """
 
     def decorator(
         fn: Callable[..., str | Message | Sequence[str | Message]],
@@ -156,13 +164,21 @@ def prompt(
         ) -> str | Message | Sequence[str | Message]:
             return fn(*args, **kwargs)
 
+        # Create the prompt
         prompt = Prompt.from_function(
             fn=wrapper,
             name=name or fn.__name__,
             description=description or fn.__doc__,
             tags=tags or [],
         )
-        registry.add_prompt(prompt)
+
+        target_registry = registry or globals()["registry"]
+
+        target_registry._functions[prompt.name] = ExecutableFunction(
+            wrapper, prompt.name
+        )
+        target_registry.add_prompt(prompt)
+
         return wrapper
 
     return decorator
@@ -187,7 +203,6 @@ def combine_prompts(*prompt_funcs: Callable[..., Any]) -> Prompt:
                 messages.append(Message(content=str(result), role="assistant"))
         return messages
 
-    # Use the name and doc of the first function as default
     first_func = prompt_funcs[0]
     names = ", ".join(f.__name__ for f in prompt_funcs)
     return Prompt.from_function(

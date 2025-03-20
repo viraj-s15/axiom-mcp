@@ -6,8 +6,13 @@ from collections.abc import Callable
 import pytest
 
 from axiom_mcp.exceptions import PromptRenderError
-from axiom_mcp.prompts.base import Message
-from axiom_mcp.prompts.utils import ExecutableFunction, FunctionRegistry, registry
+from axiom_mcp.prompts.base import Message, Prompt
+from axiom_mcp.prompts.utils import (
+    ExecutableFunction,
+    FunctionRegistry,
+    prompt,
+    registry,
+)
 
 
 @pytest.fixture
@@ -152,3 +157,125 @@ def test_global_registry() -> None:
 
     assert registry.get("test_fn") is not None
     registry.unregister("test_fn")
+
+
+def test_prompt_decorator() -> None:
+    """Test the @prompt decorator functionality."""
+
+    @prompt(name="test_prompt", description="Test prompt", tags=["test"])
+    def example_prompt(text: str) -> str:
+        """Example prompt function."""
+        return f"Example: {text}"
+
+    # Check if prompt was registered
+    test_prompt = registry.get_prompt("test_prompt")
+    assert test_prompt is not None
+    assert isinstance(test_prompt, Prompt)
+    assert test_prompt.name == "test_prompt"
+    assert test_prompt.description == "Test prompt"
+    assert test_prompt.tags == ["test"]
+    assert len(test_prompt.arguments) == 1
+    assert test_prompt.arguments[0].name == "text"
+    assert test_prompt.arguments[0].type_hint == "str"
+
+
+@pytest.mark.asyncio
+async def test_prompt_decorator_async(registry_instance: FunctionRegistry) -> None:
+    """Test the @prompt decorator with async functions."""
+
+    @registry_instance.register
+    async def async_prompt(text: str) -> str:
+        await asyncio.sleep(0.1)
+        return f"Async: {text}"
+
+    # Get the registered function
+    func = registry_instance.get("async_prompt")
+    assert func is not None
+
+    # Test execution
+    result = await registry_instance.execute("async_prompt", {"text": "test"})
+    assert len(result) == 1
+    assert str(result[0]) == "Async: test"
+
+
+def test_prompt_decorator_default_values() -> None:
+    """Test @prompt decorator with default parameter values."""
+
+    @prompt()  # Test without explicit parameters
+    def default_prompt(text: str = "default") -> str:
+        """Test prompt with default value."""
+        return f"Default: {text}"
+
+    test_prompt = registry.get_prompt("default_prompt")
+    assert test_prompt is not None
+    assert test_prompt.name == "default_prompt"
+    assert test_prompt.description == "Test prompt with default value."
+    assert len(test_prompt.arguments) == 1
+    assert test_prompt.arguments[0].name == "text"
+    assert test_prompt.arguments[0].default == "default"
+    assert not test_prompt.arguments[0].required
+
+
+def test_prompt_decorator_multiple_arguments() -> None:
+    """Test @prompt decorator with multiple arguments."""
+
+    @prompt(tags=["test", "multiple"])
+    def multi_arg_prompt(text: str, count: int, flag: bool = False) -> str:
+        return f"{text} - {count} - {flag}"
+
+    test_prompt = registry.get_prompt("multi_arg_prompt")
+    assert test_prompt is not None
+    assert len(test_prompt.arguments) == 3
+
+    # Check argument details
+    text_arg = next(arg for arg in test_prompt.arguments if arg.name == "text")
+    assert text_arg.type_hint == "str"
+    assert text_arg.required is True
+
+    count_arg = next(arg for arg in test_prompt.arguments if arg.name == "count")
+    assert count_arg.type_hint == "int"
+    assert count_arg.required is True
+
+    flag_arg = next(arg for arg in test_prompt.arguments if arg.name == "flag")
+    assert flag_arg.type_hint == "bool"
+    assert flag_arg.required is False
+    assert flag_arg.default is False
+
+
+@pytest.mark.asyncio
+async def test_prompt_decorator_return_types(
+    registry_instance: FunctionRegistry,
+) -> None:
+    """Test @prompt decorator with different return types."""
+
+    # Define and register prompts directly with test registry
+    @prompt(registry=registry_instance)
+    def str_prompt() -> str:
+        return "String response"
+
+    @prompt(registry=registry_instance)
+    def message_prompt() -> Message:
+        return Message(content="Message response", role="assistant")
+
+    @prompt(registry=registry_instance)
+    def list_prompt() -> list[Message]:
+        return [
+            Message(content="First message", role="assistant"),
+            Message(content="Second message", role="assistant"),
+        ]
+
+    # Test string return
+    str_result = await registry_instance.execute("str_prompt")
+    assert len(str_result) == 1
+    assert str(str_result[0]) == "String response"
+
+    # Test Message return
+    msg_result = await registry_instance.execute("message_prompt")
+    assert len(msg_result) == 1
+    assert str(msg_result[0]) == "Message response"
+
+    # Test list return
+    list_result = await registry_instance.execute("list_prompt")
+    assert len(list_result) == 2
+    assert str(list_result[0]) == "First message"
+    assert str(list_result[1]) == "Second message"
