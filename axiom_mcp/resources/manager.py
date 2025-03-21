@@ -1,6 +1,7 @@
 """Resource management for AxiomMCP."""
 
 import asyncio
+import contextlib
 import logging
 from collections import defaultdict
 from collections.abc import AsyncGenerator
@@ -69,6 +70,7 @@ class ResourceStats(BaseModel):
 class ResourcePool(BaseModel):
     """Pool of resources with usage tracking and health monitoring."""
 
+    model_config = {"arbitrary_types_allowed": True}
     max_size: int = Field(default=100)
     resources: dict[str, Resource] = Field(default_factory=dict)
     stats: dict[str, ResourceStats] = Field(
@@ -81,28 +83,33 @@ class ResourcePool(BaseModel):
     max_error_count: int = Field(default=3)
     health_check_interval: float = Field(default=60.0)  # seconds
     recovery_backoff: float = Field(default=5.0)  # seconds
-    _locks: dict[str, asyncio.Lock] = Field(default_factory=dict)
-    _access_times: dict[str, datetime] = Field(default_factory=dict)
+    resource_locks: dict[str, asyncio.Lock] = Field(default_factory=dict)
+    access_times: dict[str, datetime] = Field(default_factory=dict)
     _cleanup_task: asyncio.Task | None = None
     _health_check_task: asyncio.Task | None = None
+    _initialized: bool = False
 
     def __init__(self, **data):
         super().__init__(**data)
         self._global_lock = asyncio.Lock()
-        self._start_background_tasks()
 
-    def _start_background_tasks(self) -> None:
-        """Start background tasks for cleanup and health checks."""
-        if not self._cleanup_task:
+    async def initialize(self) -> None:
+        """Initialize background tasks."""
+        if not self._initialized:
             self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
-        if not self._health_check_task:
             self._health_check_task = asyncio.create_task(self._periodic_health_check())
+            self._initialized = True
+
+    async def _ensure_initialized(self) -> None:
+        """Ensure pool is initialized."""
+        if not self._initialized:
+            await self.initialize()
 
     async def _periodic_cleanup(self) -> None:
         """Periodically clean up least recently used resources."""
         while True:
             try:
-                await asyncio.sleep(30)  # Run cleanup every 30 seconds
+                await asyncio.sleep(30)
                 await self._cleanup_lru()
             except Exception:
                 logger.exception("Error in cleanup task")
@@ -111,8 +118,7 @@ class ResourcePool(BaseModel):
         """Remove least recently used resources when pool is full."""
         async with ResourceLock(self._global_lock):
             while len(self.resources) > self.max_size:
-                # Find least recently used resource
-                lru_uri = min(self._access_times.items(), key=lambda x: x[1])[0]
+                lru_uri = min(self.access_times.items(), key=lambda x: x[1])[0]
                 await self._remove_resource(lru_uri)
 
     async def _periodic_health_check(self) -> None:
@@ -193,25 +199,26 @@ class ResourcePool(BaseModel):
 
     def _get_resource_lock(self, uri: str) -> ResourceLock:
         """Get or create a lock for a specific resource."""
-        if uri not in self._locks:
-            self._locks[uri] = asyncio.Lock()
-        return ResourceLock(self._locks[uri])
+        if uri not in self.resource_locks:
+            self.resource_locks[uri] = asyncio.Lock()
+        return ResourceLock(self.resource_locks[uri])
 
     async def add(self, resource: Resource) -> None:
         """Add a resource to the pool with proper locking."""
+        await self._ensure_initialized()
         async with ResourceLock(self._global_lock):
             if len(self.resources) >= self.max_size:
                 await self._cleanup_lru()
-
             uri = str(resource.uri)
             self.resources[uri] = resource
             self.resource_types[resource.resource_type].add(uri)
-            self._access_times[uri] = datetime.now(UTC)
+            self.access_times[uri] = datetime.now(UTC)
 
     async def get(self, uri: str) -> Resource | None:
         """Get a resource from the pool with access time update."""
+        await self._ensure_initialized()
         if resource := self.resources.get(uri):
-            self._access_times[uri] = datetime.now(UTC)
+            self.access_times[uri] = datetime.now(UTC)
             return resource
         return None
 
@@ -221,8 +228,8 @@ class ResourcePool(BaseModel):
             self.resource_types[resource.resource_type].remove(uri)
             if not self.resource_types[resource.resource_type]:
                 del self.resource_types[resource.resource_type]
-            self._access_times.pop(uri, None)
-            self._locks.pop(uri, None)
+            self.access_times.pop(uri, None)
+            self.resource_locks.pop(uri, None)
 
     async def update_stats(
         self,
@@ -236,7 +243,7 @@ class ResourcePool(BaseModel):
         async with self._get_resource_lock(uri):
             stats = self.stats[uri]
             stats.last_accessed = datetime.now(UTC)
-            self._access_times[uri] = stats.last_accessed
+            self.access_times[uri] = stats.last_accessed
 
             if operation == "read":
                 stats.total_reads += 1
@@ -257,6 +264,28 @@ class ResourcePool(BaseModel):
                 stats.average_response_time = (
                     stats.average_response_time * (total_ops - 1) + response_time
                 ) / total_ops
+
+    async def cleanup(self) -> None:
+        """Clean up background tasks and resources."""
+
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._cleanup_task
+            self._cleanup_task = None
+
+        if self._health_check_task:
+            self._health_check_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._health_check_task
+            self._health_check_task = None
+
+        self._initialized = False
+        self.resources.clear()
+        self.resource_types.clear()
+        self.access_times.clear()
+        self.resource_locks.clear()
+        self.stats.clear()
 
 
 class ResourceManager:
@@ -342,7 +371,6 @@ class ResourceManager:
     ) -> Resource:
         """Create a new resource of the specified type."""
         if resource_cls := self._type_registry.get(resource_type):
-            # Convert string URI to AnyUrl if needed
             if isinstance(uri, str):
                 # Handle special cases for non-standard schemes
                 if "://" not in uri:
@@ -353,7 +381,7 @@ class ResourceManager:
             await self.pool.add(resource)
             return resource
         self._handle_unknown_resource_type(resource_type)
-        raise UnknownResourceTypeError(str(resource_type))  # For type checking
+        raise UnknownResourceTypeError(str(resource_type))
 
     async def get_resource(self, uri: str) -> Resource | None:
         """Get a resource by URI."""
@@ -390,7 +418,7 @@ class ResourceManager:
             await self.pool.update_stats(uri, "read", error=True)
             raise
         else:
-            return b""  # Not reachable due to _handle_resource_not_found raising
+            return b""
 
     async def write_resource(
         self,
@@ -411,7 +439,7 @@ class ResourceManager:
                 )
             if not resource:
                 self._handle_resource_not_found(uri)
-                return  # Not reachable, just for type checking
+                return
 
             await resource.write(content)
             size = len(content.encode()) if isinstance(content, str) else len(content)
@@ -454,8 +482,8 @@ class ResourceManager:
                 yield chunk
         else:
             self._handle_resource_not_found(uri)
-            return  # Not reachable, just for type checking
-            yield b""  # For type checking
+            return
+            yield b""
 
     def get_stats(
         self, uri: str | None = None

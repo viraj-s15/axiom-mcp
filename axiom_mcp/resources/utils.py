@@ -3,6 +3,7 @@
 import hashlib
 import logging
 import mimetypes
+import re
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlparse
@@ -10,6 +11,41 @@ from urllib.parse import urlparse
 from .base import Resource, ResourceType
 
 logger = logging.getLogger(__name__)
+
+# Constants for identifier validation
+MAX_IDENTIFIER_LENGTH = 64
+IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def validate_identifier(identifier: str) -> str:
+    """Validate a resource identifier.
+
+    Args:
+        identifier: The identifier to validate
+
+    Returns:
+        The validated identifier
+
+    Raises:
+        TypeError: If identifier is not a string
+        ValueError: If identifier is invalid
+    """
+    if not isinstance(identifier, str):
+        raise TypeError("Identifier must be a string")
+
+    if not identifier:
+        raise ValueError("Identifier cannot be empty")
+
+    if len(identifier) > MAX_IDENTIFIER_LENGTH:
+        raise ValueError("Identifier exceeds maximum length")
+
+    if identifier[0].isdigit():
+        raise ValueError("Identifier cannot start with a number")
+
+    if not IDENTIFIER_PATTERN.match(identifier):
+        raise ValueError("Identifier contains invalid characters")
+
+    return identifier
 
 
 class ResourceFilter(Protocol):

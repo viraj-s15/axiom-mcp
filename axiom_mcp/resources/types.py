@@ -88,55 +88,91 @@ class FileResource(Resource):
 
     def __init__(self, **data):
         super().__init__(**data)
-        asyncio.create_task(self._initialize_metadata())
+        self._initialized = False
+
+    async def _ensure_initialized(self) -> None:
+        """Ensure metadata is initialized."""
+        if not self._initialized:
+            await self._initialize_metadata()
+            self._initialized = True
 
     async def _initialize_metadata(self) -> None:
         """Initialize metadata for the resource."""
-        if self.path.exists():
+        try:
+            if self.path.exists():
+                stats = self.path.stat()
+                self.update_metadata(
+                    size=stats.st_size,
+                    modified_at=datetime.fromtimestamp(stats.st_mtime, tz=UTC),
+                )
+        except (FileNotFoundError, PermissionError):
+            # Ignore errors during initialization
+            pass
+
+    async def read(self) -> bytes:
+        """Read the file content."""
+        await self._ensure_initialized()
+        try:
+            async with aiofiles.open(self.path, mode="rb") as f:
+                content = await f.read()
+
+            # Update metadata after successful read
             stats = self.path.stat()
             self.update_metadata(
                 size=stats.st_size,
                 modified_at=datetime.fromtimestamp(stats.st_mtime, tz=UTC),
             )
-
-    async def read(self) -> str | bytes:
-        """Read the file content."""
-        stats = self.path.stat()
-        self.update_metadata(
-            size=stats.st_size,
-            modified_at=datetime.fromtimestamp(stats.st_mtime, tz=UTC),
-        )
-
-        mode = "rb" if self.resource_type == ResourceType.BINARY else "r"
-        encoding = self.metadata.encoding if mode == "r" else None
-
-        return (
-            self.path.read_text(encoding=encoding)
-            if mode == "r"
-            else self.path.read_bytes()
-        )
+            # Always return bytes for consistency
+            if isinstance(content, str):
+                return content.encode(self.metadata.encoding or "utf-8")
+            return content
+        except FileNotFoundError:
+            # Create parent directory if it doesn't exist
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            # Return empty content for new files
+            return b""
 
     async def read_stream(self) -> AsyncGenerator[str | bytes, None]:
         """Stream the file content."""
-        async with aiofiles.open(self.path, mode="rb") as f:
-            while chunk := await f.read(self.chunk_size):
-                if self.mime_type.startswith("text/"):
-                    yield chunk.decode(self.metadata.encoding or "utf-8")
-                else:
+        await self._ensure_initialized()
+        try:
+            async with aiofiles.open(self.path, mode="rb") as f:
+                while chunk := await f.read(self.chunk_size):
                     yield chunk
+        except FileNotFoundError:
+            # Create parent directory if it doesn't exist
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            # Yield empty content for new files
+            yield b""
 
     async def write(self, content: str | bytes) -> None:
         """Write content to the file."""
+        await self._ensure_initialized()
+        # Create parent directory if it doesn't exist
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
         if isinstance(content, str):
-            content = content.encode(self.metadata.encoding or "utf-8")
-        async with aiofiles.open(self.path, mode="wb") as f:
-            await f.write(content)
+            async with aiofiles.open(
+                self.path, mode="w", encoding=self.metadata.encoding or "utf-8"
+            ) as f:
+                await f.write(content)
+                await f.flush()
+        else:
+            async with aiofiles.open(self.path, mode="wb") as f:
+                await f.write(content)
+                await f.flush()
+
         await self._initialize_metadata()
 
     async def delete(self) -> None:
         """Delete the file."""
+        await self._ensure_initialized()
         with suppress(FileNotFoundError):
             self.path.unlink()
+
+    async def exists(self) -> bool:
+        """Check if the file exists."""
+        return self.path.exists()
 
 
 class HttpResource(Resource):

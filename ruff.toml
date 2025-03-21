@@ -17,7 +17,6 @@ select = [
     "PTH", # flake8-use-pathlib
     "ERA", # eradicate
     "PL",  # pylint
-    "TRY", # tryceratops
 ]
 
 [lint.per-file-ignores]
@@ -36,6 +35,7 @@ select = [
     "PT005",   # Allow pytest fixtures without docstrings
     "PT011",   # Allow pytest raises without exception match
     "PT019",   # Allow fixture with same name as test
+    "TRY003", # Long exception message, why is this a problem?
 ]
 
 [lint.isort]

@@ -44,7 +44,7 @@ class ResourceMetadata(BaseModel):
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
     modified_at: datetime = Field(default_factory=datetime.utcnow)
-    size: int | None = Field(default=None, description="Size in bytes if known")
+    size: int | None = Field(default=None, description="Size in bytes if known", ge=0)
     content_hash: str | None = Field(
         default=None, description="Content hash if available"
     )
@@ -67,7 +67,11 @@ class Resource(BaseModel, abc.ABC):
         description="URI of the resource",
         json_schema_extra={"host_required": False},
     )
-    name: str | None = Field(description="Name of the resource", default=None)
+    name: str | None = Field(
+        description="Name of the resource",
+        default=None,
+        pattern=r"^[^\s]+$",  # No whitespace allowed
+    )
     description: str | None = Field(
         description="Description of the resource", default=None
     )
