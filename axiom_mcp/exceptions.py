@@ -1,4 +1,4 @@
-"""Custom exceptions for Axiom MCP."""
+"""Exceptions for AxiomMCP."""
 
 import logging
 from typing import Any
@@ -225,3 +225,53 @@ class PromptRenderError(AxiomMCPError):
 
     def __init__(self, name: str, error: str):
         super().__init__(f"Error rendering prompt '{name}': {error}")
+
+
+class ResourceError(AxiomMCPError):
+    """Raised when there are issues with resource operations."""
+
+    def __init__(
+        self,
+        message: str = "Resource operation failed",
+        resource_uri: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize with resource-specific context.
+
+        Args:
+            message: Error description
+            resource_uri: The URI of the resource
+            **kwargs: Additional details to include
+        """
+        details = kwargs.pop("details", {})
+        if resource_uri:
+            details["resource_uri"] = resource_uri
+        super().__init__(message, details=details, **kwargs)
+
+
+class ResourceNotFoundError(ResourceError):
+    """Raised when a resource cannot be found."""
+
+    def __init__(self, uri: str) -> None:
+        super().__init__(f"Resource not found: {uri}")
+
+
+class ResourceUnavailableError(ResourceError):
+    """Raised when a resource is unavailable after recovery attempt."""
+
+    def __init__(self) -> None:
+        super().__init__("Resource still unavailable after recovery attempt")
+
+
+class UnknownResourceTypeError(ResourceError):
+    """Raised when an unknown resource type is encountered."""
+
+    def __init__(self, resource_type: str) -> None:
+        super().__init__(f"Unknown resource type: {resource_type}")
+
+
+class ResourceReadError(ResourceError):
+    """Raised when there's an error reading a resource."""
+
+    def __init__(self, uri: str, error: Exception) -> None:
+        super().__init__(f"Error reading resource {uri}: {error}")
