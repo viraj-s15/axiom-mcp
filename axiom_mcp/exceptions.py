@@ -275,3 +275,34 @@ class ResourceReadError(ResourceError):
 
     def __init__(self, uri: str, error: Exception) -> None:
         super().__init__(f"Error reading resource {uri}: {error}")
+
+
+class ToolError(AxiomMCPError):
+    """Raised when there are issues with tool execution."""
+
+    def __init__(
+        self,
+        message: str = "Tool execution failed",
+        tool_name: str | None = None,
+        tool_version: str | None = None,
+        execution_context: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize with tool-specific context.
+
+        Args:
+            message: Error description
+            tool_name: Name of the tool that failed
+            tool_version: Version of the tool
+            execution_context: Additional context about the tool execution
+            **kwargs: Additional details to include
+        """
+        details = kwargs.pop("details", {})
+        if tool_name:
+            details["tool_name"] = tool_name
+        if tool_version:
+            details["tool_version"] = tool_version
+        if execution_context:
+            details["execution_context"] = execution_context
+
+        super().__init__(message, details=details, **kwargs)

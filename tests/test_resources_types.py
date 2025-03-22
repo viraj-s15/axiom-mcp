@@ -109,14 +109,12 @@ class TestBinaryResource:
 class TestFileResource:
     async def test_read(self, file_resource):
         """Test reading from a file resource."""
-        file_resource = await file_resource
         content = await file_resource.read()
         # FileResource.read() returns bytes, so we should compare with bytes
         assert content == b"Hello, File World!"
 
     async def test_write(self, file_resource):
         """Test writing to a file resource."""
-        file_resource = await file_resource
         new_content = b"Updated file content"
         await file_resource.write(new_content)
         content = await file_resource.read()
@@ -124,7 +122,6 @@ class TestFileResource:
 
     async def test_write_str(self, file_resource):
         """Test writing string to a file resource."""
-        file_resource = await file_resource
         new_content = "Updated string content"
         await file_resource.write(new_content)
         content = await file_resource.read()
@@ -132,7 +129,6 @@ class TestFileResource:
 
     async def test_read_stream(self, file_resource):
         """Test streaming from a file resource."""
-        file_resource = await file_resource
         chunks = []
         async for chunk in file_resource.read_stream():
             chunks.append(chunk)
@@ -140,14 +136,12 @@ class TestFileResource:
 
     async def test_delete(self, file_resource):
         """Test deleting a file resource."""
-        file_resource = await file_resource
         assert file_resource.path.exists()
         await file_resource.delete()
         assert not file_resource.path.exists()
 
     async def test_exists(self, file_resource, temp_file):
         """Test exists check for file resource."""
-        file_resource = await file_resource
         assert await file_resource.exists() is True
         # Use the resource's delete method instead of direct file deletion
         await file_resource.delete()

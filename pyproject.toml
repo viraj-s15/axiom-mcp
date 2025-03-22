@@ -28,7 +28,15 @@ dependencies = [
     "cachetools>=5.3.2",
     "jinja2>=3.1.6",
     "aiosqlite>=0.21.0",
-    "aiohttp>=3.11.14 "
+    # Dependencies for enhanced tools
+    "prometheus-client>=0.19.0",
+    "opentelemetry-api>=1.21.0",
+    "opentelemetry-sdk>=1.21.0",
+    "opentelemetry-instrumentation>=0.42b0",
+    "asyncio-throttle>=1.0.2",
+    "redis>=5.0.1",  # For distributed caching
+    "pyyaml>=6.0.1",  # For config loading
+    "msgpack>=1.0.7",  # For efficient serialization
 ]
 
 [project.optional-dependencies]
@@ -44,7 +52,6 @@ dev = [
 
 db = [
     "asyncpg>=0.29.0",
-    "redis>=5.0.1",
     "aioredis>=2.0.1",
 ]
 
@@ -54,16 +61,23 @@ compression = [
     "brotli>=1.1.0",
 ]
 
-monitoring = [
-    "prometheus-client>=0.19.0",
-    "opentelemetry-api>=1.21.0",
-    "opentelemetry-sdk>=1.21.0",
-    "opentelemetry-instrumentation>=0.42b0",
+telemetry = [
+    "opentelemetry-instrumentation-aiohttp-client>=0.42b0",
+    "opentelemetry-instrumentation-fastapi>=0.42b0",
+    "opentelemetry-instrumentation-redis>=0.42b0",
+]
+
+validation = [
+    "jsonschema>=4.21.1",
+    "pydantic[email]>=2.5.3",
 ]
 
 all = [
-    "axiom-mcp[dev,db,compression,monitoring]"
+    "axiom-mcp[dev,db,compression,telemetry,validation]"
 ]
+
+[project.scripts]
+axiom-mcp = "axiom_mcp.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["axiom-mcp"]
@@ -84,3 +98,7 @@ known-first-party = ["axiom_mcp"]
 combine-as-imports = true
 force-wrap-aliases = true
 profile = "black"
+
+[tool.pytest.ini_options]
+addopts = "--asyncio-mode=auto"
+testpaths = ["tests"]
