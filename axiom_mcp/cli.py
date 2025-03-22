@@ -3,22 +3,28 @@
 import asyncio
 import importlib.util
 import logging
+import subprocess
 import sys
 from pathlib import Path
 from typing import Annotated
 
 import dotenv
 import typer
+import rich
+from rich.console import Console
+from rich.panel import Panel
 
 from axiom_mcp.exceptions import AxiomMCPError
 from axiom_mcp.prompts import PromptManager
 from axiom_mcp.tools.manager import ToolManager
+from axiom_mcp import __version__
 
-# Configure logging
+# Configure logging and rich console
 logging.basicConfig(
     level=logging.INFO, format="%(levelname)s: %(message)s", stream=sys.stderr
 )
 logger = logging.getLogger(__name__)
+console = Console()
 
 app = typer.Typer(
     name="axiom-mcp",
@@ -107,14 +113,16 @@ def _import_server(file: Path, server_object: str | None = None):
             server_module = importlib.import_module(module_name)
             server = getattr(server_module, object_name, None)
         except ImportError as e:
-            typer.echo(f"Error: Could not import module '{module_name}'", err=True)
+            typer.echo(
+                f"Error: Could not import module '{module_name}'", err=True)
             raise typer.Exit(1) from e
     else:
         # Just object name
         server = getattr(module, server_object, None)
 
     if server is None:
-        typer.echo(f"Error: Server object '{server_object}' not found", err=True)
+        typer.echo(
+            f"Error: Server object '{server_object}' not found", err=True)
         raise typer.Exit(1)
 
     return server
@@ -166,22 +174,68 @@ def dev(
 ):
     """Run an Axiom MCP server with the development UI."""
     try:
-        # Load environment variables
-        if env_file:
-            dotenv.load_dotenv(env_file)
-            typer.echo(f"Loaded environment from {env_file}")
-
         # Parse and import server
         file_path, server_object = _parse_file_path(file_spec)
         server = _import_server(file_path, server_object)
+
+        # Show server info
+        console.print(Panel.fit(
+            f"[bold green]Axiom MCP v{__version__}[/bold green]\n"
+            f"[cyan]Starting development server from[/cyan] {file_path}\n"
+            f"[cyan]Server name:[/cyan] {server.name}\n"
+            f"[cyan]Host:[/cyan] {server.settings.host}\n"
+            f"[cyan]Port:[/cyan] {server.settings.port}\n"
+            f"[cyan]Debug mode:[/cyan] {'enabled' if server.settings.debug else 'disabled'}\n"
+            f"[cyan]Log level:[/cyan] {server.settings.log_level}"
+        ))
+
+        # Debug: Print server object
+        console.print(f"[yellow]Debug:[/yellow] Server object: {server}")
+
+        # Load environment variables
+        if env_file:
+            dotenv.load_dotenv(env_file)
+            console.print(
+                f"[green]✓[/green] Loaded environment from {env_file}")
+
+        # Install additional packages if provided
+        if with_packages:
+            console.print(
+                f"[yellow]Installing packages:[/yellow] {', '.join(with_packages)}")
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install"] + list(with_packages))
+            console.print("[green]✓[/green] Packages installed successfully")
+
+        # Install editable directories if provided
+        if with_editable:
+            console.print(
+                f"[yellow]Installing in editable mode:[/yellow] {with_editable}")
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "-e", with_editable])
+            console.print("[green]✓[/green] Editable install completed")
 
         # Initialize managers
         tool_manager = ToolManager()
         prompt_manager = PromptManager()
 
         # Start development UI server
-        typer.echo(f"Starting development server for {file_path}")
+        console.print("\n[bold]Initializing server components...[/bold]")
         try:
+            # List available components before starting
+            tools = asyncio.run(server.list_tools())
+            prompts = asyncio.run(server.list_prompts())
+            resources = asyncio.run(server.list_resources())
+
+            console.print(f"[green]✓[/green] Found {len(tools)} tools")
+            console.print(f"[green]✓[/green] Found {len(prompts)} prompts")
+            console.print(f"[green]✓[/green] Found {len(resources)} resources")
+
+            console.print("\n[bold green]Server ready![/bold green]")
+            console.print("[cyan]Waiting for connections...[/cyan]\n")
+
+            # Debug: Confirm run method call
+            console.print("[yellow]Debug:[/yellow] Calling server.run()")
+
             asyncio.run(
                 server.run(
                     tool_manager=tool_manager,
@@ -189,21 +243,22 @@ def dev(
                     dev_mode=True,
                 )
             )
-        except AttributeError as e:
-            typer.echo("Error: Server object must implement run() method", err=True)
-            raise typer.Exit(1) from e
+        except AttributeError:
+            console.print(
+                "[red bold]Error[/red bold]: Server object must implement run() method")
+            raise typer.Exit(1)
         except Exception as e:
-            typer.echo(f"Error running server: {e}", err=True)
-            raise typer.Exit(1) from e
+            console.print(f"[red bold]Error running server[/red bold]: {e}")
+            raise typer.Exit(1)
 
     except typer.Exit:
         raise
     except AxiomMCPError as e:
-        typer.echo(f"Error: {str(e)}", err=True)
-        raise typer.Exit(1) from e
+        console.print(f"[red bold]Error[/red bold]: {str(e)}")
+        raise typer.Exit(1)
     except Exception as e:
-        typer.echo(f"Error: {str(e)}", err=True)
-        raise typer.Exit(1) from e
+        console.print(f"[red bold]Error[/red bold]: {str(e)}")
+        raise typer.Exit(1)
 
 
 def main():

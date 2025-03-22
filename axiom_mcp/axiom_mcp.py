@@ -1,29 +1,8 @@
 """FastMCP - A more ergonomic interface for MCP servers."""
 
-from pydantic import BaseModel
-from axiom_mcp.utilities.types import Image
-from axiom_mcp.utilities.logging import configure_logging, get_logger
-from axiom_mcp.tools import ToolManager
-from axiom_mcp.resources import FunctionResource, Resource, ResourceManager
-from axiom_mcp.prompts import Prompt, PromptManager, PromptResponse
-from axiom_mcp.exceptions import ResourceError
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic.networks import AnyUrl
-import asyncio
-import functools
-import inspect
-import json
-import re
-from itertools import chain
-from typing import Any, Callable, Dict, Literal, Sequence, TypeVar, ParamSpec, TYPE_CHECKING, Protocol, cast
-
-import pydantic_core
-from pydantic import BaseModel, Field
-import uvicorn
-from mcp.server import Server as MCPServer
-from mcp.server.sse import SseServerTransport
-from mcp.server.stdio import stdio_server
-from mcp.shared.context import RequestContext
+from axiom_mcp.prompts.base import Prompt, Message
+from axiom_mcp.resources.base import Resource
+from axiom_mcp.tools.base import Tool, ToolContext, ToolMetadata
 from mcp.types import (
     EmbeddedResource,
     GetPromptResult,
@@ -33,10 +12,35 @@ from mcp.types import (
     Resource as MCPBaseResource,
     Prompt as MCPBasePrompt,
 )
+from mcp.shared.context import RequestContext
+from mcp.server.stdio import stdio_server
+from mcp.server.sse import SseServerTransport
+from mcp.server import Server as MCPServer
+import uvicorn
+from pydantic import BaseModel, Field
+import pydantic_core
+from typing import Any, Callable, Dict, Literal, Sequence, TypeVar, ParamSpec, TYPE_CHECKING, Protocol, cast, Awaitable
+from itertools import chain
+import re
+import json
+import inspect
+import functools
+import asyncio
+from pydantic.networks import AnyUrl
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from axiom_mcp.exceptions import ResourceError
+from axiom_mcp.prompts import Prompt, PromptManager, PromptResponse
+from axiom_mcp.resources import FunctionResource, Resource, ResourceManager
+from axiom_mcp.tools import ToolManager
+from axiom_mcp.utilities.logging import configure_logging, get_logger
+from axiom_mcp.utilities.types import Image
+from pydantic import BaseModel
+from typing import cast, Any, Callable, Dict, Literal, Sequence, TypeVar, ParamSpec, TYPE_CHECKING, Protocol, Awaitable
+from typing_extensions import TypeAlias
 
-from axiom_mcp.tools.base import Tool, ToolContext, ToolMetadata, TemplateResource
-from axiom_mcp.resources.base import Resource
-from axiom_mcp.prompts.base import Prompt, Message
+# Define Unknown type correctly
+T = TypeVar('T')
+Unknown = T
 
 
 class MCPTool(BaseModel):
@@ -88,7 +92,7 @@ class ServerSession(Protocol):
 
 
 if TYPE_CHECKING:
-    from axiom_mcp.axiom_mcp import AxiomMCP as FastMCP
+    from axiom_mcp.axiom_mcp import AxiomMCP
 
 logger = get_logger(__name__)
 
@@ -137,9 +141,8 @@ class AxiomMCP:
         self._resource_manager = ResourceManager(
             warn_on_duplicate_resources=self.settings.warn_on_duplicate_resources
         )
-        self._prompt_manager = PromptManager(
-            warn_on_duplicate_prompts=self.settings.warn_on_duplicate_prompts
-        )
+        self._prompt_manager = PromptManager()
+
         self.dependencies = self.settings.dependencies
 
         # Set up MCP protocol handlers
@@ -169,14 +172,21 @@ class AxiomMCP:
 
     def _setup_handlers(self) -> None:
         """Set up core MCP protocol handlers."""
-        self._mcp_server.list_tools()(self.list_tools)
+        # Use type casting to handle type compatibility
+        self._mcp_server.list_tools()(
+            cast(Callable[[], Awaitable[list[MCPBaseTool]]], self.list_tools)
+        )
         self._mcp_server.call_tool()(self.call_tool)
-        self._mcp_server.list_resources()(self.list_resources)
+        self._mcp_server.list_resources()(
+            cast(Callable[[], Awaitable[list[MCPBaseResource]]],
+                 self.list_resources)
+        )
         self._mcp_server.read_resource()(self.read_resource)
-        self._mcp_server.list_prompts()(self.list_prompts)
+        self._mcp_server.list_prompts()(
+            cast(Callable[[], Awaitable[list[MCPBasePrompt]]],
+                 self.list_prompts)
+        )
         self._mcp_server.get_prompt()(self.get_prompt)
-        # TODO: This has not been added to MCP yet, see https://github.com/jlowin/fastmcp/issues/10
-        # self._mcp_server.list_resource_templates()(self.list_resource_templates)
 
     async def list_tools(self) -> list[MCPTool]:
         """List all available tools."""
@@ -199,7 +209,11 @@ class AxiomMCP:
             request_context = self._mcp_server.request_context
         except LookupError:
             request_context = None
-        return Context(request_context=request_context, fastmcp=self)
+
+        return Context(
+            request_context=cast(RequestContext, request_context),
+            resource_manager=self._resource_manager,
+        )
 
     async def call_tool(
         self, name: str, arguments: dict
@@ -221,7 +235,7 @@ class AxiomMCP:
         resources = self._resource_manager.list_resources()
         return [
             MCPResource(
-                uri=resource.uri,
+                uri=str(resource.uri),  # Convert AnyUrl to str
                 name=resource.name or "",
                 description=resource.description,
                 mimeType=resource.mime_type,
@@ -234,7 +248,8 @@ class AxiomMCP:
         templates = self._resource_manager.list_templates()
         return [
             MCPResourceTemplate(
-                uriTemplate=template.uri_template,
+                # Convert AnyUrl to str for template URI
+                uriTemplate=str(template.uri),
                 name=template.name or "",
                 description=template.description or "",
             )
@@ -243,7 +258,7 @@ class AxiomMCP:
 
     async def read_resource(self, uri: AnyUrl | str) -> str | bytes:
         """Read a resource by URI."""
-        resource = await self._resource_manager.get_resource(uri)
+        resource = await self._resource_manager.get_resource(str(uri))  # Convert AnyUrl to str
         if not resource:
             raise ResourceError(f"Unknown resource: {uri}")
 
@@ -323,7 +338,8 @@ class AxiomMCP:
         Args:
             resource: A Resource instance to add
         """
-        self._resource_manager.add_resource(resource)
+        asyncio.create_task(self._resource_manager.add_resource(
+            resource))  # Make it async
 
     def resource(
         self,
@@ -333,67 +349,43 @@ class AxiomMCP:
         description: str | None = None,
         mime_type: str | None = None,
     ) -> Callable[[Callable[P, R]], Callable[P, R]]:
-        """Decorator to register a function as a resource.
-
-        The function will be called when the resource is read to generate its content.
-        The function can return:
-        - str for text content
-        - bytes for binary content
-        - other types will be converted to JSON
-
-        If the URI contains parameters (e.g. "resource://{param}") or the function
-        has parameters, it will be registered as a template resource.
-
-        Args:
-            uri: URI for the resource (e.g. "resource://my-resource" or "resource://{param}")
-            name: Optional name for the resource
-            description: Optional description of the resource
-            mime_type: Optional MIME type for the resource
-
-        Example:
-            @server.resource("resource://my-resource")
-            def get_data() -> str:
-                return "Hello, world!"
-
-            @server.resource("resource://{city}/weather")
-            def get_weather(city: str) -> str:
-                return f"Weather for {city}"
-        """
-        # Check if user passed function directly instead of calling decorator
+        """Decorator to register a function as a resource."""
         if callable(uri):
             raise TypeError(
                 "The @resource decorator was used incorrectly. "
-                "Did you forget to call it? Use @resource('uri') instead of @resource"
+                "Did you forget to call it? Use @resource() instead of @resource"
             )
 
         def decorator(fn: Callable[P, R]) -> Callable[P, R]:
+            # Keep track of the original function
+            orig_fn = fn
+
+            # Wrap the function to handle async/sync compatibility
             @functools.wraps(fn)
-            def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+                if asyncio.iscoroutinefunction(fn):
+                    return await fn(*args, **kwargs)
                 return fn(*args, **kwargs)
 
-            # Check if this should be a template
-            has_uri_params = "{" in uri and "}" in uri
-            has_func_params = bool(inspect.signature(fn).parameters)
+            # Check if URI contains parameters
+            uri_has_params = "{" in uri and "}" in uri
+            func_params = list(inspect.signature(fn).parameters.keys())
 
-            if has_uri_params or has_func_params:
-                # Validate that URI params match function params
-                uri_params = set(re.findall(r"{(\w+)}", uri))
-                func_params = set(inspect.signature(fn).parameters.keys())
+            if uri_has_params or func_params:
+                logger.debug(
+                    "Registering template resource with parameters: %s "
+                    f"and function parameters {func_params}",
+                    uri,
+                )
 
-                if uri_params != func_params:
-                    raise ValueError(
-                        f"Mismatch between URI parameters {uri_params} "
-                        f"and function parameters {func_params}"
-                    )
-
-                # Register as template
-                self._resource_manager.add_template(
+                # Register as template - create task to handle the async call
+                asyncio.create_task(self._resource_manager.add_template(
                     wrapper,
                     uri_template=uri,
                     name=name,
                     description=description,
                     mime_type=mime_type or "text/plain",
-                )
+                ))
             else:
                 # Register as regular resource
                 resource = FunctionResource(
@@ -404,7 +396,9 @@ class AxiomMCP:
                     fn=wrapper,
                 )
                 self.add_resource(resource)
-            return wrapper
+
+            # Return the original function
+            return orig_fn
 
         return decorator
 
@@ -460,8 +454,15 @@ class AxiomMCP:
             )
 
         def decorator(func: Callable[P, R_PromptResponse]) -> Callable[P, R_PromptResponse]:
+            # Wrap the function to handle async/sync compatibility
+            @functools.wraps(func)
+            async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R_PromptResponse:
+                if asyncio.iscoroutinefunction(func):
+                    return await func(*args, **kwargs)
+                return func(*args, **kwargs)
+
             prompt = Prompt.from_function(
-                func, name=name, description=description)
+                wrapper, name=name, description=description)
             self.add_prompt(prompt)
             return func
 
@@ -605,25 +606,18 @@ class Context(BaseModel):
     """
 
     _request_context: RequestContext | None
-    _fastmcp: FastMCP | None
+    _resource_manager: ResourceManager
 
     def __init__(
         self,
         *,
         request_context: RequestContext | None = None,
-        fastmcp: FastMCP | None = None,
+        resource_manager: ResourceManager,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
         self._request_context = request_context
-        self._fastmcp = fastmcp
-
-    @property
-    def fastmcp(self) -> FastMCP:
-        """Access to the FastMCP server."""
-        if self._fastmcp is None:
-            raise ValueError("Context is not available outside of a request")
-        return self._fastmcp
+        self._resource_manager = resource_manager
 
     @property
     def request_context(self) -> RequestContext:
@@ -655,7 +649,7 @@ class Context(BaseModel):
             progress_token=progress_token, progress=progress, total=total
         )
 
-    async def read_resource(self, uri: str | AnyUrl) -> str | bytes:
+    async def read_resource(self, uri: str) -> str | bytes:
         """Read a resource by URI.
 
         Args:
@@ -664,10 +658,7 @@ class Context(BaseModel):
         Returns:
             The resource content as either text or bytes
         """
-        assert (
-            self._fastmcp is not None
-        ), "Context is not available outside of a request"
-        return await self._fastmcp.read_resource(uri)
+        return await self._resource_manager.read_resource(uri)
 
     def log(
         self,

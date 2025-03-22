@@ -6,9 +6,11 @@ import logging
 from collections import defaultdict
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from typing import Any, Final
+from typing import Any, Final, Callable
 
 from pydantic import AnyUrl, BaseModel, Field
+
+from axiom_mcp.resources.advanced_types import TemplateResource
 
 from ..exceptions import (
     ResourceNotFoundError,
@@ -97,7 +99,8 @@ class ResourcePool(BaseModel):
         """Initialize background tasks."""
         if not self._initialized:
             self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
-            self._health_check_task = asyncio.create_task(self._periodic_health_check())
+            self._health_check_task = asyncio.create_task(
+                self._periodic_health_check())
             self._initialized = True
 
     async def _ensure_initialized(self) -> None:
@@ -262,7 +265,8 @@ class ResourcePool(BaseModel):
             if response_time > 0:
                 total_ops = stats.total_reads + stats.total_writes + stats.total_deletes
                 stats.average_response_time = (
-                    stats.average_response_time * (total_ops - 1) + response_time
+                    stats.average_response_time *
+                    (total_ops - 1) + response_time
                 ) / total_ops
 
     async def cleanup(self) -> None:
@@ -291,8 +295,9 @@ class ResourcePool(BaseModel):
 class ResourceManager:
     """Core resource manager with pooling and monitoring."""
 
-    def __init__(self, pool_size: int = 100):
+    def __init__(self, pool_size: int = 100, warn_on_duplicate_resources: bool = True):
         self.pool = ResourcePool(max_size=pool_size)
+        self.warn_on_duplicate_resources = warn_on_duplicate_resources
         self._type_registry: dict[ResourceType, type[Resource]] = {
             ResourceType.TEXT: TextResource,
             ResourceType.BINARY: BinaryResource,
@@ -301,6 +306,33 @@ class ResourceManager:
             ResourceType.FUNCTION: FunctionResource,
             ResourceType.STREAM: StreamResource,
         }
+
+    def list_resources(self) -> list[Resource]:
+        """List all registered resources."""
+        return list(self.pool.resources.values())
+
+    def list_templates(self) -> list[TemplateResource]:
+        """List all template resources."""
+        return [
+            resource for resource in self.pool.resources.values()
+            if isinstance(resource, TemplateResource)
+        ]
+
+    async def add_resource(self, resource: Resource) -> None:
+        """Add a resource to the pool."""
+        if self.warn_on_duplicate_resources and str(resource.uri) in self.pool.resources:
+            logger.warning(f"Resource already exists: {resource.uri}")
+        await self.pool.add(resource)
+
+    async def add_template(self, fn: Callable, uri_template: str, **kwargs: Any) -> None:
+        """Add a template resource to the pool."""
+        resource = TemplateResource(
+            uri=AnyUrl(uri_template),
+            fn=fn,
+            resource_type=ResourceType.TEMPLATE,
+            **kwargs
+        )
+        await self.add_resource(resource)
 
     def _handle_recovery_failure(self, uri: str) -> None:
         """Handle resource recovery failure."""
@@ -377,7 +409,8 @@ class ResourceManager:
                     uri = f"{resource_type.value}://{uri}"
                 uri = AnyUrl(uri)
 
-            resource = resource_cls(uri=uri, resource_type=resource_type, **kwargs)
+            resource = resource_cls(
+                uri=uri, resource_type=resource_type, **kwargs)
             await self.pool.add(resource)
             return resource
         self._handle_unknown_resource_type(resource_type)
@@ -396,13 +429,15 @@ class ResourceManager:
             if resource := await self.get_resource(uri):
                 content = await resource.read()
                 size = (
-                    len(content.encode()) if isinstance(content, str) else len(content)
+                    len(content.encode()) if isinstance(
+                        content, str) else len(content)
                 )
                 await self.pool.update_stats(
                     uri,
                     "read",
                     bytes_count=size,
-                    response_time=(datetime.now(UTC) - start_time).total_seconds(),
+                    response_time=(datetime.now(UTC) -
+                                   start_time).total_seconds(),
                 )
                 return content
 
@@ -442,7 +477,8 @@ class ResourceManager:
                 return
 
             await resource.write(content)
-            size = len(content.encode()) if isinstance(content, str) else len(content)
+            size = len(content.encode()) if isinstance(
+                content, str) else len(content)
             await self.pool.update_stats(
                 uri,
                 "write",
@@ -464,7 +500,8 @@ class ResourceManager:
                 await self.pool.update_stats(
                     uri,
                     "delete",
-                    response_time=(datetime.now(UTC) - start_time).total_seconds(),
+                    response_time=(datetime.now(UTC) -
+                                   start_time).total_seconds(),
                 )
             else:
                 self._handle_resource_not_found(uri)
