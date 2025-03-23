@@ -19,7 +19,10 @@ class EchoPromptResponse(PromptResponse):
         return UserMessage(content=self.message, role="user")
 
 
-mcp = AxiomMCP("Echo")
+# Configure MCP with correct port
+mcp = AxiomMCP("Echo", warn_on_duplicate_resources=False,
+               warn_on_duplicate_prompts=False,
+               port=8888)  # Set port to match client expectation
 
 
 @mcp.resource("echo://{message}")
@@ -41,3 +44,8 @@ def echo_prompt(message: str) -> PromptResponse:
     """Create an echo prompt"""
     logger.info(f"Prompt called with message: {message}")
     return EchoPromptResponse(f"Please process this message: {message}")
+
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(mcp.run("sse"))

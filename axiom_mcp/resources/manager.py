@@ -81,27 +81,32 @@ class ResourcePool(BaseModel):
     resource_types: dict[ResourceType, set[str]] = Field(
         default_factory=lambda: defaultdict(set)
     )
-    # New fields for resource management
     max_error_count: int = Field(default=3)
     health_check_interval: float = Field(default=60.0)  # seconds
     recovery_backoff: float = Field(default=5.0)  # seconds
     resource_locks: dict[str, asyncio.Lock] = Field(default_factory=dict)
     access_times: dict[str, datetime] = Field(default_factory=dict)
-    _cleanup_task: asyncio.Task | None = None
-    _health_check_task: asyncio.Task | None = None
-    _initialized: bool = False
 
     def __init__(self, **data):
         super().__init__(**data)
         self._global_lock = asyncio.Lock()
+        self._cleanup_task = None
+        self._health_check_task = None
+        self._initialized = False
+        self._shutting_down = False
+        self._shutdown_event = asyncio.Event()  # Initialize the event
 
     async def initialize(self) -> None:
         """Initialize background tasks."""
         if not self._initialized:
-            self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
-            self._health_check_task = asyncio.create_task(
-                self._periodic_health_check())
-            self._initialized = True
+            async with self._global_lock:
+                if self._initialized:
+                    return
+                self._cleanup_task = asyncio.create_task(
+                    self._periodic_cleanup())
+                self._health_check_task = asyncio.create_task(
+                    self._periodic_health_check())
+                self._initialized = True
 
     async def _ensure_initialized(self) -> None:
         """Ensure pool is initialized."""
@@ -110,12 +115,17 @@ class ResourcePool(BaseModel):
 
     async def _periodic_cleanup(self) -> None:
         """Periodically clean up least recently used resources."""
-        while True:
+        while not self._shutdown_event.is_set():
             try:
                 await asyncio.sleep(30)
+                if self._shutdown_event.is_set():
+                    break
                 await self._cleanup_lru()
+            except asyncio.CancelledError:
+                break
             except Exception:
-                logger.exception("Error in cleanup task")
+                if not self._shutdown_event.is_set():
+                    logger.exception("Error in cleanup task")
 
     async def _cleanup_lru(self) -> None:
         """Remove least recently used resources when pool is full."""
@@ -126,12 +136,17 @@ class ResourcePool(BaseModel):
 
     async def _periodic_health_check(self) -> None:
         """Periodically check health of all resources."""
-        while True:
+        while not self._shutdown_event.is_set():
             try:
                 await asyncio.sleep(self.health_check_interval)
+                if self._shutdown_event.is_set():
+                    break
                 await self._check_all_resources()
+            except asyncio.CancelledError:
+                break
             except Exception:
-                logger.exception("Error in health check task")
+                if not self._shutdown_event.is_set():
+                    logger.exception("Error in health check task")
 
     async def _check_all_resources(self) -> None:
         """Check health of all resources."""
@@ -268,6 +283,62 @@ class ResourcePool(BaseModel):
                     stats.average_response_time *
                     (total_ops - 1) + response_time
                 ) / total_ops
+
+    async def shutdown(self) -> None:
+        """Clean up background tasks and resources."""
+        if self._shutting_down:
+            return
+
+        async with self._global_lock:
+            if self._shutting_down:
+                return
+
+            self._shutting_down = True
+            self._shutdown_event.set()
+
+            # Cancel background tasks
+            tasks = []
+            if self._cleanup_task:
+                self._cleanup_task.cancel()
+                tasks.append(self._cleanup_task)
+            if self._health_check_task:
+                self._health_check_task.cancel()
+                tasks.append(self._health_check_task)
+
+            # Wait for tasks to complete
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Clean up resources
+            cleanup_tasks = []
+            for uri, resource in self.resources.items():
+                cleanup_tasks.append(self._cleanup_resource(uri, resource))
+
+            if cleanup_tasks:
+                await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+
+            self.resources.clear()
+            self.resource_types.clear()
+            self.access_times.clear()
+            self.resource_locks.clear()
+            self.stats.clear()
+
+            self._initialized = False
+            self._shutting_down = False
+            self._shutdown_event.clear()
+
+    async def _cleanup_resource(self, uri: str, resource: Resource) -> None:
+        """Clean up a single resource."""
+        try:
+            async with self._get_resource_lock(uri):
+                try:
+                    await resource.close()
+                except Exception:
+                    logger.exception(f"Error closing resource {uri}")
+                finally:
+                    self.stats[uri].health.is_healthy = False
+        except Exception:
+            logger.exception(f"Error cleaning up resource {uri}")
 
     async def cleanup(self) -> None:
         """Clean up background tasks and resources."""

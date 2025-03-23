@@ -1,7 +1,11 @@
 """Exceptions for AxiomMCP."""
 
+import asyncio
+from collections.abc import Awaitable
 import logging
-from typing import Any
+from typing import Any, Callable, Literal
+
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +40,8 @@ class AxiomMCPError(Exception):
         message_parts = [self.message]
 
         if self.details:
-            details_str = ", ".join(f"{k}={v}" for k, v in self.details.items())
+            details_str = ", ".join(
+                f"{k}={v}" for k, v in self.details.items())
             message_parts.append(f"Details: {details_str}")
 
         if self.cause:
@@ -203,7 +208,8 @@ class MissingArgumentsError(AxiomMCPError):
     """Raised when required arguments are missing."""
 
     def __init__(self, missing_args: list[str]):
-        super().__init__(f"Missing required arguments: {', '.join(missing_args)}")
+        super().__init__(
+            f"Missing required arguments: {', '.join(missing_args)}")
 
 
 class InvalidMessageRoleError(AxiomMCPError):
@@ -306,3 +312,230 @@ class ToolError(AxiomMCPError):
             details["execution_context"] = execution_context
 
         super().__init__(message, details=details, **kwargs)
+
+
+class ToolTimeoutError(ToolError):
+    """Raised when a tool execution times out."""
+
+    def __init__(
+        self,
+        tool_name: str,
+        timeout: float,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            f"Tool {tool_name} timed out after {timeout} seconds",
+            tool_name=tool_name,
+            execution_context={"timeout": timeout},
+            **kwargs,
+        )
+
+
+class ToolDependencyError(ToolError):
+    """Raised when tool dependencies are missing or invalid."""
+
+    def __init__(
+        self,
+        tool_name: str,
+        missing_deps: list[str],
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            f"Missing dependencies for tool {tool_name}: {', '.join(missing_deps)}",
+            tool_name=tool_name,
+            execution_context={"missing_dependencies": missing_deps},
+            **kwargs,
+        )
+
+
+class ToolValidationError(ToolError):
+    """Raised when tool input/output validation fails."""
+
+    def __init__(
+        self,
+        tool_name: str,
+        validation_type: Literal["input", "output"],
+        errors: list[str],
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            f"{validation_type.title()} validation failed for tool {tool_name}: {'; '.join(errors)}",
+            tool_name=tool_name,
+            execution_context={
+                "validation_type": validation_type, "errors": errors},
+            **kwargs,
+        )
+
+
+class ToolExecutionError(ToolError):
+    """Raised when a tool execution fails."""
+
+    def __init__(
+        self,
+        tool_name: str,
+        error: Exception,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            f"Tool {tool_name} execution failed: {str(error)}",
+            tool_name=tool_name,
+            cause=error,
+            **kwargs,
+        )
+
+
+class ToolStateError(ToolError):
+    """Raised when a tool's state is invalid."""
+
+    def __init__(
+        self,
+        tool_name: str,
+        state_error: str,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            f"Invalid state for tool {tool_name}: {state_error}",
+            tool_name=tool_name,
+            execution_context={"state_error": state_error},
+            **kwargs,
+        )
+
+
+class ToolStreamError(ToolError):
+    """Raised when streaming from a tool fails."""
+
+    def __init__(
+        self,
+        tool_name: str,
+        error: Exception,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            f"Error streaming from tool {tool_name}: {str(error)}",
+            tool_name=tool_name,
+            cause=error,
+            **kwargs,
+        )
+
+
+class ToolRecoveryStrategy(BaseModel):
+    """Configuration for tool error recovery."""
+
+    max_retries: int = Field(
+        default=3, description="Maximum number of retry attempts")
+    retry_delay: float = Field(
+        default=1.0, description="Delay between retries in seconds")
+    exponential_backoff: bool = Field(
+        default=True, description="Whether to use exponential backoff for retries"
+    )
+    retry_on_errors: set[type[Exception]] = Field(
+        default_factory=lambda: {
+            ToolTimeoutError,
+            ToolDependencyError,
+            ToolValidationError,
+            ToolExecutionError,
+            ToolStateError,
+            ToolStreamError,
+        },
+        description="Set of error types to retry on",
+    )
+    recovery_hooks: dict[type[Exception], Callable[[Exception], Awaitable[None]]] = Field(
+        default_factory=dict,
+        description="Custom recovery functions for specific error types",
+    )
+
+
+class RetryableError(Exception):
+    """Base class for errors that support retry with recovery."""
+
+    def __init__(
+        self,
+        message: str,
+        recovery_strategy: ToolRecoveryStrategy | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(message)
+        self.recovery_strategy = recovery_strategy or ToolRecoveryStrategy()
+        self.retries = 0
+        self.last_error: Exception | None = None
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+    async def attempt_recovery(self) -> bool:
+        """Attempt to recover from the error.
+
+        Returns:
+            bool: Whether recovery was successful
+        """
+        if self.retries >= self.recovery_strategy.max_retries:
+            return False
+
+        self.retries += 1
+        try:
+            # Look for a custom recovery hook only if we have a last error
+            if self.last_error is not None:
+                recovery_hook = self.recovery_strategy.recovery_hooks.get(
+                    type(self.last_error))
+                if recovery_hook:
+                    await recovery_hook(self.last_error)
+
+            # Wait with exponential backoff if enabled
+            delay = (
+                self.recovery_strategy.retry_delay
+                * (2 ** (self.retries - 1))
+                if self.recovery_strategy.exponential_backoff
+                else self.recovery_strategy.retry_delay
+            )
+            await asyncio.sleep(delay)
+            return True
+
+        except Exception as e:
+            logger.error(f"Error during recovery attempt: {e}")
+            self.last_error = e
+            return False
+
+
+class ConnectionResetError(RetryableError, ConnectionError):
+    """Raised when a connection is reset."""
+
+    async def attempt_recovery(self) -> bool:
+        """Attempt to recover from connection reset."""
+        if await super().attempt_recovery():
+            # Add connection-specific recovery logic here
+            try:
+                # Example: Clear any stale connection state
+                return True
+            except Exception as e:
+                self.last_error = e
+                return False
+        return False
+
+
+class StreamInterruptedError(RetryableError, ToolStreamError):
+    """Raised when a stream is interrupted."""
+
+    async def attempt_recovery(self) -> bool:
+        """Attempt to recover from stream interruption."""
+        if await super().attempt_recovery():
+            try:
+                # Example: Reset stream state and buffers
+                return True
+            except Exception as e:
+                self.last_error = e
+                return False
+        return False
+
+
+class ServiceUnavailableError(RetryableError, ConnectionError):
+    """Raised when a required service is unavailable."""
+
+    async def attempt_recovery(self) -> bool:
+        """Attempt to recover from service unavailability."""
+        if await super().attempt_recovery():
+            try:
+                # Example: Check service health before retrying
+                return True
+            except Exception as e:
+                self.last_error = e
+                return False
+        return False

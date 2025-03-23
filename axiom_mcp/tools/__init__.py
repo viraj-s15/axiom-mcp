@@ -1,6 +1,6 @@
 """Tool management and execution for AxiomMCP."""
 
-from .base import Tool, ToolContext, ToolDependency, ToolMetadata, ToolValidationSchema
+from .base import Tool, ToolContext, ToolDependency, ToolMetadata, ToolValidation
 from .manager import ToolManager, ToolCacheEntry, ToolMetrics
 from .registry import ToolRegistry, register_tool
 from .utils import (
@@ -23,7 +23,7 @@ __all__ = [
     "ToolContext",
     "ToolDependency",
     "ToolMetadata",
-    "ToolValidationSchema",
+    "ToolValidation",
     "ToolManager",
     "ToolCacheEntry",
     "ToolMetrics",

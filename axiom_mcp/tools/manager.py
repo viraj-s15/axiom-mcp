@@ -1,16 +1,18 @@
 """Tool management and execution."""
 
 import asyncio
+import cachetools
 import hashlib
 import json
 import logging
+import time
 from collections import defaultdict
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from typing import Any
 
-import cachetools
 from pydantic import BaseModel, Field
+from jsonschema import validate as validate_schema
 
 from ..exceptions import ToolError
 from .base import Tool, ToolContext, ToolDependency
@@ -44,138 +46,194 @@ class ToolManager:
     def __init__(
         self,
         cache_size: int = 1000,
-        default_timeout: float | None = 30.0,
+        default_timeout: float = 30.0,
         enable_metrics: bool = True,
+        warn_on_duplicate_tools: bool = True,
     ):
+        """Initialize the tool manager.
+
+        Args:
+            cache_size: Maximum number of results to cache
+            default_timeout: Default timeout for tool execution in seconds
+            enable_metrics: Whether to collect execution metrics
+            warn_on_duplicate_tools: Whether to warn on duplicate tool registration
+        """
         self._tools: dict[str, type[Tool]] = {}
-        self._metrics: dict[str, ToolMetrics] = {}
-        self._cache = cachetools.TTLCache(maxsize=cache_size, ttl=3600)
-        self._dependency_graph: dict[str, set[str]] = defaultdict(set)
-        self._default_timeout = default_timeout
-        self._enable_metrics = enable_metrics
+        self._metrics: dict[str, ToolMetrics] = defaultdict(ToolMetrics)
+        self._cache = cachetools.LRUCache(maxsize=cache_size)
+        self.default_timeout = default_timeout
+        self.enable_metrics = enable_metrics
+        self.warn_on_duplicate = warn_on_duplicate_tools
+        self._initialized = False
+        self._initialization_lock = asyncio.Lock()
         self._execution_lock = asyncio.Lock()
 
-    def register_tool(self, tool_cls: type[Tool]) -> None:
-        """Register a tool with dependency tracking."""
-        name = tool_cls.metadata.name
-        self._tools[name] = tool_cls
+    async def initialize(self) -> None:
+        """Initialize the tool manager."""
+        if self._initialized:
+            return
 
-        # Update dependency graph
-        for dep in tool_cls.metadata.dependencies:
-            if isinstance(dep, dict):
-                dep = ToolDependency(**dep)
-            self._dependency_graph[name].add(dep.tool_name)
+        async with self._initialization_lock:
+            if self._initialized:
+                return
+
+            # Initialize caches and metrics
+            self._cache.clear()
+            self._metrics.clear()
+            self._initialized = True
+
+    async def _ensure_initialized(self) -> None:
+        """Ensure manager is initialized."""
+        if not self._initialized:
+            await self.initialize()
+
+    def register_tool(self, tool: type[Tool], replace: bool = False) -> None:
+        """Register a tool with validation and metrics setup."""
+        tool_name = tool.metadata.name
+
+        if tool_name in self._tools and not replace:
+            if self.warn_on_duplicate:
+                logger.warning(f"Tool {tool_name} already registered")
+            return
+
+        # Validate tool implementation
+        if not hasattr(tool, 'execute'):
+            raise ToolError(f"Tool {tool_name} missing execute method")
 
         # Initialize metrics
-        if self._enable_metrics:
-            self._metrics[name] = ToolMetrics()
+        if self.enable_metrics and tool_name not in self._metrics:
+            self._metrics[tool_name] = ToolMetrics()
 
-        logger.info(f"Registered tool: {name} v{tool_cls.metadata.version}")
+        self._tools[tool_name] = tool
 
-    def _calculate_cache_key(self, tool: Tool, args: dict[str, Any]) -> str:
-        """Calculate cache key based on tool name, version, args and context."""
-        context_dict = tool.context.model_dump()
-        context_hash = hashlib.sha256(
-            json.dumps(context_dict, sort_keys=True).encode()
-        ).hexdigest()
+    async def execute_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        context: ToolContext | None = None
+    ) -> Any:
+        """Execute a tool with proper error handling and metrics."""
+        await self._ensure_initialized()
+        tool_cls = self._tools.get(name)
+        if not tool_cls:
+            raise ToolError(f"Unknown tool: {name}")
 
-        key_parts = [
-            tool.metadata.name,
-            tool.metadata.version,
-            json.dumps(args, sort_keys=True),
-            context_hash,
-        ]
-        return hashlib.sha256(":".join(key_parts).encode()).hexdigest()
+        # Use context or create default
+        ctx = context or ToolContext()
+        timeout = ctx.timeout or self.default_timeout  # Define timeout early
 
-    def _update_metrics(
-        self, tool_name: str, start_time: datetime, success: bool
+        # Check cache first
+        cache_key = self._get_cache_key(name, arguments)
+        if ctx.cache_enabled and cache_key in self._cache:
+            return self._cache[cache_key]
+
+        metrics = self._metrics.get(name) if self.enable_metrics else None
+        start_time = time.monotonic()  # Using monotonic for better timing
+
+        try:
+            # Create tool instance
+            tool = tool_cls()
+
+            # Validate input if enabled
+            if ctx.validation_enabled and tool.metadata.validation:
+                try:
+                    validate_schema(
+                        arguments, tool.metadata.validation.input_schema)
+                except Exception as e:
+                    raise ToolError(
+                        f"Invalid arguments for tool {name}: {str(e)}",
+                        tool_name=name,
+                    )
+
+            # Execute with timeout
+            result = await asyncio.wait_for(
+                tool.execute(arguments),
+                timeout=timeout
+            )
+
+            # Cache result if enabled
+            if ctx.cache_enabled:
+                self._cache[cache_key] = result
+
+            # Update metrics
+            await self._update_metrics(name, start_time, success=True)
+
+            return result
+
+        except asyncio.TimeoutError:
+            await self._update_metrics(name, start_time, success=False)
+            raise ToolError(
+                f"Tool {name} timed out after {timeout} seconds",
+                tool_name=name,
+                execution_context={"timeout": timeout},
+            )
+        except Exception as e:
+            await self._update_metrics(name, start_time, success=False)
+            raise ToolError(
+                f"Tool {name} failed: {str(e)}",
+                tool_name=name,
+                cause=e
+            )
+
+    async def _update_metrics(
+        self,
+        tool_name: str,
+        start_time: float,
+        success: bool
     ) -> None:
-        """Update metrics for tool execution."""
-        if not self._enable_metrics:
+        """Update metrics for a tool execution."""
+        if not self.enable_metrics:
             return
 
         metrics = self._metrics[tool_name]
-        now = datetime.now(UTC)
-        execution_time = (now - start_time).total_seconds()
-
         metrics.total_calls += 1
         if success:
             metrics.successful_calls += 1
         else:
             metrics.failed_calls += 1
 
-        # Update average execution time
-        if metrics.total_calls == 1:
-            metrics.average_execution_time = execution_time
-        else:
-            metrics.average_execution_time = (
-                metrics.average_execution_time * (metrics.total_calls - 1)
-                + execution_time
-            ) / metrics.total_calls
+        metrics.last_used = datetime.now(UTC)
+        total_time = time.monotonic() - start_time
+        metrics.average_execution_time = (
+            (metrics.average_execution_time *
+             (metrics.total_calls - 1) + total_time)
+            / metrics.total_calls
+        )
 
-        metrics.last_used = now
+    def _get_cache_key(self, name: str, arguments: dict[str, Any]) -> str:
+        """Generate a cache key for tool execution."""
+        args_str = json.dumps(arguments, sort_keys=True)
+        key = f"{name}:{args_str}"
+        return hashlib.sha256(key.encode()).hexdigest()
 
-    def get_metrics(self, tool_name: str) -> ToolMetrics | None:
+    def get_metrics(self, name: str) -> ToolMetrics:
         """Get metrics for a specific tool."""
-        return self._metrics.get(tool_name)
+        if not self.enable_metrics:
+            raise ToolError("Metrics are disabled")
 
-    async def execute_tool(
-        self,
-        tool_name: str,
-        args: dict[str, Any],
-        context: ToolContext | None = None,
-    ) -> Any:
-        """Execute a tool with caching and metrics."""
-        if tool_name not in self._tools:
-            raise ToolError(f"Tool not found: {tool_name}")
+        if name not in self._tools:
+            raise ToolError(f"Unknown tool: {name}")
 
-        tool_cls = self._tools[tool_name]
-        tool = tool_cls(context=context or ToolContext())
+        return self._metrics[name]
 
-        # Set default timeout if not specified
-        if tool.context.timeout is None:
-            tool.context.timeout = self._default_timeout
+    def list_tools(self) -> list[type[Tool]]:
+        """List all registered tools."""
+        return list(self._tools.values())
 
-        # Check cache if enabled
-        if tool.metadata.cacheable and tool.context.cache_enabled:
-            cache_key = self._calculate_cache_key(tool, args)
-            if cache_entry := self._cache.get(cache_key):
-                if (
-                    cache_entry.tool_version == tool.metadata.version
-                    and cache_entry.context_hash
-                    == hashlib.sha256(
-                        json.dumps(tool.context.model_dump(), sort_keys=True).encode()
-                    ).hexdigest()
-                ):
-                    return cache_entry.result
-
-        start_time = datetime.now(UTC)
-        try:
-            cache_key = self._calculate_cache_key(tool, args)
-            async with self._execution_lock:
-                result = await tool(args)
-
-            if tool.metadata.cacheable and tool.context.cache_enabled:
-                cache_entry = ToolCacheEntry(
-                    result=result,
-                    tool_version=tool.metadata.version,
-                    context_hash=hashlib.sha256(
-                        json.dumps(tool.context.model_dump(), sort_keys=True).encode()
-                    ).hexdigest(),
-                )
-                self._cache[cache_key] = cache_entry
-
-            self._update_metrics(tool_name, start_time, success=True)
-            return result
-
-        except Exception as e:
-            self._update_metrics(tool_name, start_time, success=False)
-            raise ToolError(
-                message=str(e),
-                tool_name=tool_name,
-                tool_version=tool.metadata.version,
-                execution_context=tool.context.model_dump(),
-            ) from e
+    def clear_cache(self, name: str | None = None) -> None:
+        """Clear tool execution cache."""
+        if name:
+            if name not in self._tools:
+                raise ToolError(f"Unknown tool: {name}")
+            # Remove specific tool entries
+            keys_to_remove = [
+                k for k in self._cache.keys()
+                if k.startswith(f"{name}:")
+            ]
+            for k in keys_to_remove:
+                self._cache.pop(k, None)
+        else:
+            self._cache.clear()
 
     async def stream_tool(
         self,
@@ -193,16 +251,16 @@ class ToolManager:
         if not tool.metadata.supports_streaming:
             raise ToolError(f"Tool does not support streaming: {tool_name}")
 
-        start_time = datetime.now(UTC)
+        start_time = time.monotonic()
         try:
             async with self._execution_lock:
                 async for chunk in tool.stream(args):
                     yield chunk
 
-            self._update_metrics(tool_name, start_time, success=True)
+            await self._update_metrics(tool_name, start_time, success=True)
 
         except Exception as e:
-            self._update_metrics(tool_name, start_time, success=False)
+            await self._update_metrics(tool_name, start_time, success=False)
             raise ToolError(
                 message=str(e),
                 tool_name=tool_name,

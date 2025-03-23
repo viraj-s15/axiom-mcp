@@ -44,7 +44,8 @@ class ResourceMetadata(BaseModel):
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
     modified_at: datetime = Field(default_factory=datetime.utcnow)
-    size: int | None = Field(default=None, description="Size in bytes if known", ge=0)
+    size: int | None = Field(
+        default=None, description="Size in bytes if known", ge=0)
     content_hash: str | None = Field(
         default=None, description="Content hash if available"
     )
@@ -54,7 +55,8 @@ class ResourceMetadata(BaseModel):
     compression: str | None = Field(
         default=None, description="Compression algorithm used"
     )
-    mime_type: str | None = Field(default=None, description="Content MIME type")
+    mime_type: str | None = Field(
+        default=None, description="Content MIME type")
 
 
 class Resource(BaseModel, abc.ABC):
@@ -104,7 +106,8 @@ class Resource(BaseModel, abc.ABC):
 
     async def write(self, content: str | bytes) -> None:
         """Write content to the resource if supported."""
-        raise NotImplementedError("Write operation not supported for this resource")
+        raise NotImplementedError(
+            "Write operation not supported for this resource")
 
     async def exists(self) -> bool:
         """Check if the resource exists."""
@@ -117,7 +120,8 @@ class Resource(BaseModel, abc.ABC):
 
     async def delete(self) -> None:
         """Delete the resource if supported."""
-        raise NotImplementedError("Delete operation not supported for this resource")
+        raise NotImplementedError(
+            "Delete operation not supported for this resource")
 
     async def recover(self) -> bool:
         """Attempt to recover the resource after an error.
@@ -130,6 +134,14 @@ class Resource(BaseModel, abc.ABC):
             return await self.exists()
         except Exception:  # Now catching specific base exception
             return False
+
+    async def close(self) -> None:
+        """Close any open resources or connections.
+
+        This method should be called when the resource is no longer needed.
+        Default implementation does nothing.
+        """
+        pass
 
     def get_size(self) -> int | None:
         """Get the size of the resource if known."""

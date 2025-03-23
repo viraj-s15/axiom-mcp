@@ -1,16 +1,18 @@
 """FastMCP - A more ergonomic interface for MCP servers."""
 
 from axiom_mcp.prompts.base import Prompt, Message
-from axiom_mcp.resources.base import Resource
+from axiom_mcp.resources.base import Resource, ResourceType
 from axiom_mcp.tools.base import Tool, ToolContext, ToolMetadata
 from mcp.types import (
     EmbeddedResource,
     GetPromptResult,
     ImageContent,
     TextContent,
-    Tool as MCPBaseTool,
-    Resource as MCPBaseResource,
-    Prompt as MCPBasePrompt,
+    Tool as MCPTool,
+    Resource as MCPResource,
+    Prompt as MCPPrompt,
+    PromptArgument as MCPPromptArgument,
+    ResourceTemplate as MCPResourceTemplate,
 )
 from mcp.shared.context import RequestContext
 from mcp.server.stdio import stdio_server
@@ -34,49 +36,12 @@ from axiom_mcp.resources import FunctionResource, Resource, ResourceManager
 from axiom_mcp.tools import ToolManager
 from axiom_mcp.utilities.logging import configure_logging, get_logger
 from axiom_mcp.utilities.types import Image
-from pydantic import BaseModel
-from typing import cast, Any, Callable, Dict, Literal, Sequence, TypeVar, ParamSpec, TYPE_CHECKING, Protocol, Awaitable
 from typing_extensions import TypeAlias
+from starlette.middleware.cors import CORSMiddleware  # Add CORS middleware import
 
 # Define Unknown type correctly
 T = TypeVar('T')
 Unknown = T
-
-
-class MCPTool(BaseModel):
-    """MCP tool definition."""
-    name: str
-    description: str | None = None
-    inputSchema: dict[str, Any] | None = None
-
-
-class MCPResource(BaseModel):
-    """MCP resource definition."""
-    uri: str
-    name: str = ""
-    description: str | None = None
-    mimeType: str | None = None
-
-
-class MCPResourceTemplate(BaseModel):
-    """MCP resource template definition."""
-    uriTemplate: str
-    name: str = ""
-    description: str | None = None
-
-
-class MCPPromptArgument(BaseModel):
-    """MCP prompt argument definition."""
-    name: str
-    description: str | None = None
-    required: bool = False
-
-
-class MCPPrompt(BaseModel):
-    """MCP prompt definition."""
-    name: str
-    description: str | None = None
-    arguments: list[MCPPromptArgument] | None = None
 
 
 class ServerSession(Protocol):
@@ -130,9 +95,31 @@ class Settings(BaseSettings):
 
 
 class AxiomMCP:
+    # Track instances by name to ensure singletons
+    _instances: dict[str, "AxiomMCP"] = {}
+
+    def __new__(cls, name: str | None = None, **settings: Any):
+        """Create or retrieve an existing instance."""
+        init_name = name or "AxiomMCP"
+        if init_name in cls._instances:
+            # Return existing instance if it exists
+            return cls._instances[init_name]
+
+        # Create new instance if it doesn't exist
+        instance = super().__new__(cls)
+        cls._instances[init_name] = instance
+        return instance
+
     def __init__(self, name: str | None = None, **settings: Any):
+        init_name = name or "AxiomMCP"
+
+        # Skip initialization if this instance is already initialized
+        if hasattr(self, '_initialized') and self._initialized:
+            return
+
         self.settings = Settings(**settings)
-        self._mcp_server = MCPServer(name=name or "FastMCP")
+        # Create server with name first before trying to access it
+        self._mcp_server = MCPServer(name=init_name)
         self._tool_manager = ToolManager(
             cache_size=1000,
             default_timeout=30.0,
@@ -141,9 +128,15 @@ class AxiomMCP:
         self._resource_manager = ResourceManager(
             warn_on_duplicate_resources=self.settings.warn_on_duplicate_resources
         )
-        self._prompt_manager = PromptManager()
+        self._prompt_manager = PromptManager(
+            warn_on_duplicate=self.settings.warn_on_duplicate_prompts
+        )
 
         self.dependencies = self.settings.dependencies
+
+        self._pending_tools = []  # Store pending tools
+        self._pending_resources = []
+        self._pending_prompts = []
 
         # Set up MCP protocol handlers
         self._setup_handlers()
@@ -151,122 +144,57 @@ class AxiomMCP:
         # Configure logging
         configure_logging(self.settings.log_level)
 
+        self._initialized = True
+
+        # Add signal handlers for graceful shutdown
+        self._setup_signal_handlers()
+
+    def _setup_signal_handlers(self) -> None:
+        """Set up signal handlers for graceful shutdown."""
+        import signal
+
+        def handle_shutdown(signum: int, frame: Any) -> None:
+            """Handle shutdown signals."""
+            logger.info(
+                "Received shutdown signal, initiating graceful shutdown...")
+            asyncio.create_task(self.shutdown())
+
+        # Register handlers for common shutdown signals
+        signal.signal(signal.SIGINT, handle_shutdown)
+        signal.signal(signal.SIGTERM, handle_shutdown)
+
+    async def shutdown(self) -> None:
+        """Perform graceful shutdown of all components."""
+        logger.info("Initiating graceful shutdown...")
+
+        try:
+            # Clean up managers in parallel
+            async def async_clear_cache():
+                self._tool_manager.clear_cache()
+
+            await asyncio.gather(
+                self._resource_manager.pool.shutdown(),
+                async_clear_cache(),
+                return_exceptions=True
+            )
+
+            # Wait for any pending operations to complete
+            await asyncio.sleep(0.5)  # Short grace period
+
+            logger.info("Shutdown complete")
+
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+            raise
+        finally:
+            # Force exit if something is hanging
+            import sys
+            sys.exit(0)
+
     @property
     def name(self) -> str:
+        """Get the server name."""
         return self._mcp_server.name
-
-    def run(self, transport: Literal["stdio", "sse"] = "stdio") -> None:
-        """Run the FastMCP server. Note this is a synchronous function.
-
-        Args:
-            transport: Transport protocol to use ("stdio" or "sse")
-        """
-        TRANSPORTS = Literal["stdio", "sse"]
-        if transport not in TRANSPORTS.__args__:  # type: ignore
-            raise ValueError(f"Unknown transport: {transport}")
-
-        if transport == "stdio":
-            asyncio.run(self.run_stdio_async())
-        else:  # transport == "sse"
-            asyncio.run(self.run_sse_async())
-
-    def _setup_handlers(self) -> None:
-        """Set up core MCP protocol handlers."""
-        # Use type casting to handle type compatibility
-        self._mcp_server.list_tools()(
-            cast(Callable[[], Awaitable[list[MCPBaseTool]]], self.list_tools)
-        )
-        self._mcp_server.call_tool()(self.call_tool)
-        self._mcp_server.list_resources()(
-            cast(Callable[[], Awaitable[list[MCPBaseResource]]],
-                 self.list_resources)
-        )
-        self._mcp_server.read_resource()(self.read_resource)
-        self._mcp_server.list_prompts()(
-            cast(Callable[[], Awaitable[list[MCPBasePrompt]]],
-                 self.list_prompts)
-        )
-        self._mcp_server.get_prompt()(self.get_prompt)
-
-    async def list_tools(self) -> list[MCPTool]:
-        """List all available tools."""
-        tools = self._tool_manager._tools.values()  # Access registered tools directly
-        return [
-            MCPTool(
-                name=tool_cls.metadata.name,
-                description=tool_cls.metadata.description,
-                inputSchema=tool_cls.metadata.validation.input_schema if tool_cls.metadata.validation else None,
-            )
-            for tool_cls in tools
-        ]
-
-    def get_context(self) -> "Context":
-        """
-        Returns a Context object. Note that the context will only be valid
-        during a request; outside a request, most methods will error.
-        """
-        try:
-            request_context = self._mcp_server.request_context
-        except LookupError:
-            request_context = None
-
-        return Context(
-            request_context=cast(RequestContext, request_context),
-            resource_manager=self._resource_manager,
-        )
-
-    async def call_tool(
-        self, name: str, arguments: dict
-    ) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
-        """Call a tool by name with arguments."""
-        context = self.get_context()
-        tool_context = ToolContext(
-            dry_run=False,
-            cache_enabled=True,
-            validation_enabled=True
-        )
-        result = await self._tool_manager.execute_tool(name, arguments, context=tool_context)
-        converted_result = _convert_to_content(result)
-        return converted_result
-
-    async def list_resources(self) -> list[MCPResource]:
-        """List all available resources."""
-
-        resources = self._resource_manager.list_resources()
-        return [
-            MCPResource(
-                uri=str(resource.uri),  # Convert AnyUrl to str
-                name=resource.name or "",
-                description=resource.description,
-                mimeType=resource.mime_type,
-            )
-            for resource in resources
-        ]
-
-    async def list_resource_templates(self) -> list[MCPResourceTemplate]:
-        """List all available resource templates."""
-        templates = self._resource_manager.list_templates()
-        return [
-            MCPResourceTemplate(
-                # Convert AnyUrl to str for template URI
-                uriTemplate=str(template.uri),
-                name=template.name or "",
-                description=template.description or "",
-            )
-            for template in templates
-        ]
-
-    async def read_resource(self, uri: AnyUrl | str) -> str | bytes:
-        """Read a resource by URI."""
-        resource = await self._resource_manager.get_resource(str(uri))  # Convert AnyUrl to str
-        if not resource:
-            raise ResourceError(f"Unknown resource: {uri}")
-
-        try:
-            return await resource.read()
-        except Exception as e:
-            logger.error(f"Error reading resource {uri}: {e}")
-            raise ResourceError(str(e))
 
     def add_tool(
         self,
@@ -275,50 +203,23 @@ class AxiomMCP:
         description: str | None = None,
     ) -> None:
         """Add a tool to the server."""
-        # Create a Tool class from the function
-        tool_name = name or fn.__name__
+        # Store the tool for later registration
+        self._pending_tools.append((fn, name, description))
 
-        class FunctionTool(Tool):
-            metadata = ToolMetadata(
-                name=tool_name,
-                description=description or fn.__doc__ or "",
-                version="1.0.0"
-            )
+    def add_resource(self, resource: Resource) -> None:
+        """Add a resource to the server."""
+        # Store the resource for later registration
+        self._pending_resources.append(resource)
 
-            async def execute(self, args: dict[str, Any]) -> Any:
-                if asyncio.iscoroutinefunction(fn):
-                    return await fn(**args)
-                return fn(**args)
-
-        self._tool_manager.register_tool(FunctionTool)
+    def add_prompt(self, prompt: Prompt) -> None:
+        """Add a prompt to the server."""
+        # Store the prompt for later registration
+        self._pending_prompts.append(prompt)
 
     def tool(
         self, name: str | None = None, description: str | None = None
     ) -> Callable[[Callable[P, R]], Callable[P, R]]:
-        """Decorator to register a tool.
-
-        Tools can optionally request a Context object by adding a parameter with the Context type annotation.
-        The context provides access to MCP capabilities like logging, progress reporting, and resource access.
-
-        Args:
-            name: Optional name for the tool (defaults to function name)
-            description: Optional description of what the tool does
-
-        Example:
-            @server.tool()
-            def my_tool(x: int) -> str:
-                return str(x)
-
-            @server.tool()
-            def tool_with_context(x: int, ctx: Context) -> str:
-                ctx.info(f"Processing {x}")
-                return str(x)
-
-            @server.tool()
-            async def async_tool(x: int, context: Context) -> str:
-                await context.report_progress(50, 100)
-                return str(x)
-        """
+        """Decorator to register a tool."""
         # Check if user passed function directly instead of calling decorator
         if callable(name):
             raise TypeError(
@@ -331,15 +232,6 @@ class AxiomMCP:
             return fn
 
         return decorator
-
-    def add_resource(self, resource: Resource) -> None:
-        """Add a resource to the server.
-
-        Args:
-            resource: A Resource instance to add
-        """
-        asyncio.create_task(self._resource_manager.add_resource(
-            resource))  # Make it async
 
     def resource(
         self,
@@ -378,37 +270,26 @@ class AxiomMCP:
                     uri,
                 )
 
-                # Register as template - create task to handle the async call
-                asyncio.create_task(self._resource_manager.add_template(
-                    wrapper,
-                    uri_template=uri,
-                    name=name,
-                    description=description,
-                    mime_type=mime_type or "text/plain",
-                ))
+                # Register as template - store for later registration
+                self._pending_resources.append(
+                    (wrapper, uri, name, description, mime_type))
             else:
-                # Register as regular resource
+                # Register as regular resource - create a FunctionResource instance
                 resource = FunctionResource(
                     uri=AnyUrl(uri),
                     name=name,
                     description=description,
                     mime_type=mime_type or "text/plain",
-                    fn=wrapper,
+                    resource_type=ResourceType.FUNCTION,
+                    fn=wrapper
                 )
+                # Set the function after initialization
                 self.add_resource(resource)
 
             # Return the original function
             return orig_fn
 
         return decorator
-
-    def add_prompt(self, prompt: Prompt) -> None:
-        """Add a prompt to the server.
-
-        Args:
-            prompt: A Prompt instance to add
-        """
-        self._prompt_manager.add_prompt(prompt)
 
     def prompt(
         self, name: str | None = None, description: str | None = None
@@ -468,6 +349,176 @@ class AxiomMCP:
 
         return decorator
 
+    def _setup_handlers(self) -> None:
+        """Set up core MCP protocol handlers."""
+        # Use type casting to handle type compatibility
+        self._mcp_server.list_tools()(
+            cast(Callable[[], Awaitable[list[MCPTool]]], self.list_tools)
+        )
+        self._mcp_server.call_tool()(self.call_tool)
+        self._mcp_server.list_resources()(
+            cast(Callable[[], Awaitable[list[MCPResource]]],
+                 self.list_resources)
+        )
+        self._mcp_server.read_resource()(self.read_resource)
+        self._mcp_server.list_prompts()(
+            cast(Callable[[], Awaitable[list[MCPPrompt]]],
+                 self.list_prompts)
+        )
+        self._mcp_server.get_prompt()(self.get_prompt)
+
+    def _process_pending_tools(self) -> None:
+        """Process and register pending tools."""
+        for fn, name, description in self._pending_tools:
+            tool_name = name or fn.__name__
+
+            class FunctionTool(Tool):
+                metadata = ToolMetadata(
+                    name=tool_name,
+                    description=description or fn.__doc__ or "",
+                    version="1.0.0",
+                    author=None,  # Optional parameter
+                    tags=[],  # Empty list by default
+                    dependencies=[],  # Empty list by default
+                    validation=None  # Optional parameter
+                )
+
+                async def execute(self, args: dict[str, Any]) -> Any:
+                    if asyncio.iscoroutinefunction(fn):
+                        return await fn(**args)
+                    return fn(**args)
+
+            self._tool_manager.register_tool(FunctionTool)
+
+    async def _process_pending_resources(self) -> None:
+        """Process and register pending resources."""
+        for wrapper, uri, name, description, mime_type in self._pending_resources:
+            resource = FunctionResource(
+                uri=AnyUrl(uri),
+                name=name,
+                description=description,
+                mime_type=mime_type or "text/plain",
+                resource_type=ResourceType.FUNCTION,
+                fn=wrapper
+            )
+            await self._resource_manager.add_resource(resource)
+
+    def _process_pending_prompts(self) -> None:
+        """Process and register pending prompts."""
+        for prompt in self._pending_prompts:
+            self._prompt_manager.add_prompt(prompt)
+
+    async def run(self, transport: Literal["stdio", "sse"] = "stdio") -> None:
+        """Run the AxiomMCP server."""
+        try:
+            # Process all pending items before starting
+            self._process_pending_tools()
+            await self._process_pending_resources()
+            self._process_pending_prompts()
+
+            if transport == "stdio":
+                await self.run_stdio_async()
+            else:
+                await self.run_sse_async()
+        except Exception:
+            logger.exception("Error running server")
+            await self.shutdown()
+            raise
+        finally:
+            # Ensure cleanup happens even on unexpected exits
+            await self.shutdown()
+
+    async def list_tools(self) -> list[MCPTool]:
+        """List all available tools."""
+        # Process any pending tools first
+        self._process_pending_tools()
+
+        tools = []
+        for tool_cls in self._tool_manager._tools.values():
+            tool = MCPTool(
+                name=tool_cls.metadata.name,
+                description=tool_cls.metadata.description,
+                inputSchema=tool_cls.metadata.validation.input_schema
+                if tool_cls.metadata.validation
+                else {},
+            )
+            tools.append(tool)  # Actually append the tool to the list
+
+        return tools  # Return the populated list
+
+    def get_context(self) -> "Context":
+        """
+        Returns a Context object. Note that the context will only be valid
+        during a request; outside a request, most methods will error.
+        """
+        try:
+            request_context = self._mcp_server.request_context
+        except LookupError:
+            request_context = None
+
+        return Context(
+            request_context=cast(RequestContext, request_context),
+            resource_manager=self._resource_manager,
+        )
+
+    async def call_tool(
+        self, name: str, arguments: dict
+    ) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
+        """Call a tool by name with arguments."""
+        context = self.get_context()
+        tool_context = ToolContext(
+            dry_run=False,
+            cache_enabled=True,
+            validation_enabled=True
+        )
+        result = await self._tool_manager.execute_tool(name, arguments, context=tool_context)
+        converted_result = _convert_to_content(result)
+        return converted_result
+
+    async def list_resources(self) -> list[MCPResource]:
+        """List all available resources."""
+        # Process any pending resources first
+        await self._process_pending_resources()
+
+        resources = []
+        for resource in self._resource_manager.list_resources():
+            mcp_resource = MCPResource(
+                uri=AnyUrl(str(resource.uri)),  # Convert to AnyUrl explicitly
+                name=resource.name or "",  # Ensure name is never None
+                description=resource.description,
+                mimeType=resource.mime_type,
+            )
+            resources.append(mcp_resource)
+        return resources
+
+    async def list_resource_templates(self) -> list[MCPResourceTemplate]:
+        """List all available resource templates."""
+        # Process any pending resources first
+        await self._process_pending_resources()
+
+        templates = self._resource_manager.list_templates()
+        return [
+            MCPResourceTemplate(
+                # Convert AnyUrl to str for template URI
+                uriTemplate=str(template.uri),
+                name=template.name or "",
+                description=template.description or "",
+            )
+            for template in templates
+        ]
+
+    async def read_resource(self, uri: AnyUrl | str) -> str | bytes:
+        """Read a resource by URI."""
+        resource = await self._resource_manager.get_resource(str(uri))  # Convert AnyUrl to str
+        if not resource:
+            raise ResourceError(f"Unknown resource: {uri}")
+
+        try:
+            return await resource.read()
+        except Exception as e:
+            logger.error(f"Error reading resource {uri}: {e}")
+            raise ResourceError(str(e))
+
     async def run_stdio_async(self) -> None:
         """Run the server using stdio transport."""
         async with stdio_server() as (read_stream, write_stream):
@@ -478,47 +529,340 @@ class AxiomMCP:
             )
 
     async def run_sse_async(self) -> None:
-        """Run the server using SSE transport."""
+        """Run the server using SSE transport with improved error handling."""
         from starlette.applications import Starlette
         from starlette.routing import Route
+        from starlette.responses import StreamingResponse, JSONResponse
+        from starlette.background import BackgroundTask
+        import asyncio
+        from .exceptions import (
+            ConnectionResetError,
+            StreamInterruptedError,
+            ServiceUnavailableError,
+            ToolRecoveryStrategy
+        )
 
-        sse = SseServerTransport("/messages")
+        # Process all pending items BEFORE creating SSE handler
+        self._process_pending_tools()
+        await self._process_pending_resources()
+        self._process_pending_prompts()
 
-        async def handle_sse(request):
-            async with sse.connect_sse(
-                request.scope, request.receive, request._send
-            ) as streams:
-                await self._mcp_server.run(
-                    streams[0],
-                    streams[1],
-                    self._mcp_server.create_initialization_options(),
+        # Initialize tool manager
+        await self._tool_manager.initialize()
+
+        class SseHandler:
+            def __init__(self, mcp_server):
+                self.mcp_server = mcp_server
+                self.connections = {}
+                self._connection_id = 0
+                self._active_tasks = set()
+                self._recovery_strategy = ToolRecoveryStrategy(
+                    max_retries=3,
+                    retry_delay=1.0,
+                    exponential_backoff=True
+                )
+                self._shutdown_event = asyncio.Event()
+
+            async def handle_sse_connect(self, request):
+                connection_id = str(self._connection_id)
+                self._connection_id += 1
+
+                headers = {
+                    "Cache-Control": "no-cache",
+                    "Content-Type": "text/event-stream",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                    "Access-Control-Allow-Origin": "*",
+                }
+
+                message_queue = asyncio.Queue()
+                mcp_queue = asyncio.Queue()
+                self.connections[connection_id] = {
+                    "message_queue": message_queue,
+                    "mcp_queue": mcp_queue,
+                    "task_group": None,
+                    "active": True
+                }
+
+                # Send initial connection ID
+                await message_queue.put({"event": "connected", "data": connection_id})
+
+                async def event_generator():
+                    try:
+                        async with asyncio.TaskGroup() as tg:
+                            self.connections[connection_id]["task_group"] = tg
+                            # Start MCP server handler task
+                            mcp_task = tg.create_task(
+                                self._handle_mcp_connection(
+                                    connection_id,
+                                    message_queue,
+                                    mcp_queue
+                                )
+                            )
+
+                            # Event stream handler task
+                            while self.connections[connection_id]["active"]:
+                                try:
+                                    message = await asyncio.wait_for(
+                                        message_queue.get(),
+                                        timeout=30.0  # 30 second timeout
+                                    )
+
+                                    if message is None:  # Sentinel to close
+                                        break
+
+                                    if "event" in message:
+                                        yield f"event: {message['event']}\n"
+
+                                    if "data" in message:
+                                        data = message["data"]
+                                        if isinstance(data, (dict, list)):
+                                            data = json.dumps(data)
+                                        for line in str(data).splitlines():
+                                            yield f"data: {line}\n"
+
+                                    yield "\n"
+
+                                    # Send keep-alive comment every 15 seconds
+                                    if not message.get("event") == "keepalive":
+                                        await asyncio.sleep(15)
+                                        await message_queue.put({"event": "keepalive", "data": ""})
+
+                                except asyncio.TimeoutError:
+                                    # Send keep-alive on timeout
+                                    yield ": keepalive\n\n"
+                                    continue
+                                except asyncio.CancelledError:
+                                    break
+                                except Exception as e:
+                                    logger.error(
+                                        f"Error processing SSE message: {e}")
+                                    if not await self._attempt_recovery(e, connection_id):
+                                        break
+
+                    except* Exception as eg:
+                        for e in eg.exceptions:
+                            logger.error(
+                                f"Task error in connection {connection_id}: {e}")
+                    finally:
+                        await self._cleanup_connection(connection_id)
+
+                return StreamingResponse(
+                    event_generator(),
+                    headers=headers,
+                    media_type="text/event-stream"
                 )
 
-        async def handle_messages(request):
-            await sse.handle_post_message(request.scope, request.receive, request._send)
+            async def _handle_mcp_connection(
+                self,
+                connection_id: str,
+                message_queue: asyncio.Queue,
+                mcp_queue: asyncio.Queue,
+            ) -> None:
+                """Handle MCP server connection."""
+                try:
+                    class MessageReader:
+                        def __init__(self, queue: asyncio.Queue):
+                            self.queue = queue
+                            self._closed = False
 
-        starlette_app = Starlette(
+                        async def read(self):
+                            if self._closed:
+                                return None
+                            try:
+                                message = await self.queue.get()
+                                if message is None:  # Check for sentinel
+                                    self._closed = True
+                                    return None
+                                return message.get("mcp_message")
+                            except asyncio.CancelledError:
+                                self._closed = True
+                                return None
+
+                        async def __aenter__(self):
+                            return self
+
+                        async def __aexit__(self, exc_type, exc_val, exc_tb):
+                            self._closed = True
+
+                        def __aiter__(self):
+                            return self
+
+                        async def __anext__(self):
+                            if self._closed:
+                                raise StopAsyncIteration
+                            message = await self.read()
+                            if message is None:
+                                raise StopAsyncIteration
+                            return message
+
+                    class MessageWriter:
+                        def __init__(self, queue: asyncio.Queue):
+                            self.queue = queue
+                            self._closed = False
+
+                        async def write(self, message):
+                            if not self._closed:
+                                try:
+                                    await self.queue.put({"event": "message", "data": message})
+                                except asyncio.CancelledError:
+                                    self._closed = True
+
+                        async def __aenter__(self):
+                            return self
+
+                        async def __aexit__(self, exc_type, exc_val, exc_tb):
+                            self._closed = True
+
+                    reader = MessageReader(mcp_queue)
+                    writer = MessageWriter(message_queue)
+
+                    await self.mcp_server.run(
+                        reader,
+                        writer,
+                        self.mcp_server.create_initialization_options()
+                    )
+
+                except Exception as e:
+                    logger.error(
+                        f"MCP server error for connection {connection_id}: {e}")
+                    await message_queue.put(None)  # Signal to close connection
+                    raise
+
+            async def _attempt_recovery(
+                self,
+                error: Exception,
+                connection_id: str
+            ) -> bool:
+                """Attempt to recover from an error."""
+                if isinstance(error, (ConnectionResetError, StreamInterruptedError)):
+                    return await error.attempt_recovery()
+                return False
+
+            async def _cleanup_connection(self, connection_id: str) -> None:
+                """Clean up resources associated with a connection."""
+                if connection_id in self.connections:
+                    conn_data = self.connections[connection_id]
+                    conn_data["active"] = False
+
+                    try:
+                        await conn_data["message_queue"].put(None)
+                        await conn_data["mcp_queue"].put(None)
+
+                        if conn_data["task_group"]:
+                            for task in conn_data["task_group"]._tasks:
+                                if not task.done():
+                                    task.cancel()
+
+                    except Exception as e:
+                        logger.error(f"Error during connection cleanup: {e}")
+                    finally:
+                        del self.connections[connection_id]
+                        logger.info(f"SSE connection {connection_id} closed")
+
+            async def handle_message(self, request):
+                """Handle messages from client to server."""
+                try:
+                    body = await request.json()
+                    connection_id = body.get("connection_id")
+                    message = body.get("message")
+
+                    if not connection_id or not message:
+                        return JSONResponse(
+                            {"error": "Missing connection_id or message"},
+                            status_code=400
+                        )
+
+                    if connection_id not in self.connections:
+                        return JSONResponse(
+                            {"error": f"Connection {connection_id} not found"},
+                            status_code=404
+                        )
+
+                    conn_data = self.connections[connection_id]
+                    if not conn_data["active"]:
+                        return JSONResponse(
+                            {"error": f"Connection {connection_id} is closed"},
+                            status_code=400
+                        )
+
+                    await conn_data["mcp_queue"].put({"mcp_message": message})
+                    return JSONResponse({"status": "message sent"}, status_code=202)
+
+                except Exception as e:
+                    logger.error(f"Error handling client message: {e}")
+                    return JSONResponse({"error": str(e)}, status_code=500)
+
+            async def shutdown(self):
+                """Clean shutdown of all connections."""
+                try:
+                    self._shutdown_event.set()
+                    # Send shutdown signal to all connections
+                    shutdown_tasks = []
+                    for connection_id in list(self.connections.keys()):
+                        shutdown_tasks.append(
+                            self._cleanup_connection(connection_id)
+                        )
+
+                    if shutdown_tasks:
+                        await asyncio.gather(*shutdown_tasks, return_exceptions=True)
+
+                except Exception as e:
+                    logger.error(f"Error during shutdown: {e}")
+                finally:
+                    self.connections.clear()
+
+        # Create SSE handler and Starlette app
+        sse_handler = SseHandler(self._mcp_server)
+
+        app = Starlette(
             debug=self.settings.debug,
             routes=[
-                Route("/sse", endpoint=handle_sse),
-                Route("/messages", endpoint=handle_messages, methods=["POST"]),
+                Route("/sse", endpoint=sse_handler.handle_sse_connect),
+                Route("/messages", endpoint=sse_handler.handle_message,
+                      methods=["POST"]),
             ],
+            on_shutdown=[sse_handler.shutdown]
+        )
+
+        # Add CORS middleware
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
         )
 
         config = uvicorn.Config(
-            starlette_app,
-            host=self.settings.host,
+            app,
+            host="127.0.0.1",
             port=self.settings.port,
             log_level=self.settings.log_level.lower(),
+            workers=1,
         )
         server = uvicorn.Server(config)
-        await server.serve()
+
+        try:
+            await server.serve()
+        except Exception as e:
+            logger.error(f"Server error: {e}")
+            raise ServiceUnavailableError(
+                "SSE server failed",
+                recovery_strategy=ToolRecoveryStrategy(),
+                error=e
+            )
+        finally:
+            await sse_handler.shutdown()
 
     async def list_prompts(self) -> list[MCPPrompt]:
         """List all available prompts."""
-        prompts = self._prompt_manager.list_prompts()
-        return [
-            MCPPrompt(
+        # Process any pending prompts first
+        self._process_pending_prompts()
+
+        prompts = []
+        for prompt in self._prompt_manager.list_prompts():
+            mcp_prompt = MCPPrompt(
                 name=prompt.name,
                 description=prompt.description,
                 arguments=[
@@ -527,11 +871,11 @@ class AxiomMCP:
                         description=arg.description,
                         required=arg.required,
                     )
-                    for arg in (prompt.arguments or [])
-                ],
+                    for arg in prompt.arguments
+                ] if prompt.arguments else None,
             )
-            for prompt in prompts
-        ]
+            prompts.append(mcp_prompt)
+        return prompts
 
     async def get_prompt(
         self, name: str, arguments: Dict[str, Any] | None = None
