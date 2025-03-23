@@ -38,6 +38,7 @@ class AddTool(Tool):
             input_schema=number_input_schema
         ),
         author="MathServer",
+        version="1.0.0"
     )
 
     async def execute(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -45,10 +46,13 @@ class AddTool(Tool):
         logger.info(f"Adding {a} + {b}")
         result = a + b
         return {
-            "operation": "addition",
-            "a": a,
-            "b": b,
-            "result": result
+            "type": "text",
+            "content": {
+                "operation": "addition",
+                "a": a,
+                "b": b,
+                "result": result
+            }
         }
 
 
@@ -61,6 +65,7 @@ class SubtractTool(Tool):
             input_schema=number_input_schema
         ),
         author="MathServer",
+        version="1.0.0",  # Added version for compatibility
     )
 
     async def execute(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -68,10 +73,13 @@ class SubtractTool(Tool):
         logger.info(f"Subtracting {b} from {a}")
         result = a - b
         return {
-            "operation": "subtraction",
-            "a": a,
-            "b": b,
-            "result": result
+            "type": "text",  # Added for client compatibility
+            "content": {
+                "operation": "subtraction",
+                "a": a,
+                "b": b,
+                "result": result
+            }
         }
 
 
@@ -84,6 +92,7 @@ class MultiplyTool(Tool):
             input_schema=number_input_schema
         ),
         author="MathServer",
+        version="1.0.0",  # Added version
     )
 
     async def execute(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -91,10 +100,13 @@ class MultiplyTool(Tool):
         logger.info(f"Multiplying {a} * {b}")
         result = a * b
         return {
-            "operation": "multiplication",
-            "a": a,
-            "b": b,
-            "result": result
+            "type": "text",  # Added for client compatibility
+            "content": {
+                "operation": "multiplication",
+                "a": a,
+                "b": b,
+                "result": result
+            }
         }
 
 
@@ -107,6 +119,7 @@ class DivideTool(Tool):
             input_schema=number_input_schema
         ),
         author="MathServer",
+        version="1.0.0",  # Added version
     )
 
     async def execute(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -116,11 +129,30 @@ class DivideTool(Tool):
         logger.info(f"Dividing {a} / {b}")
         result = a / b
         return {
-            "operation": "division",
-            "a": a,
-            "b": b,
-            "result": result
+            "type": "text",  # Added for client compatibility
+            "content": {
+                "operation": "division",
+                "a": a,
+                "b": b,
+                "result": result
+            }
         }
+
+
+class MathPromptResponse(PromptResponse):
+    """Response wrapper for math prompts."""
+
+    def __init__(self, operation: str, a: float, b: float):
+        self.operation = operation
+        self.a = a
+        self.b = b
+        self.__name__ = "MathPromptResponse"
+
+    def __call__(self) -> UserMessage:
+        return UserMessage(
+            content=f"Please calculate {self.a} {self.operation} {self.b}",
+            role="user"
+        )
 
 
 # Register tools with the server
@@ -145,23 +177,29 @@ async def math_resource(operation: str, a: float, b: float) -> str:
 
     tool = tools[operation](context=None)
     result = await tool.execute({"a": a, "b": b})
-    return f"Math {operation} result: {result['result']}"
+    return f"Math {operation} result: {result['content']['result']}"
 
 
 @mcp.prompt()
 def math_prompt(operation: str, a: float, b: float) -> PromptResponse:
     """Create a math operation prompt"""
     logger.info(f"Math prompt called with: {operation}({a}, {b})")
-    return UserMessage(
-        content=f"Please calculate {a} {operation} {b}",
-        role="user"
-    )
+    return MathPromptResponse(operation, a, b)
 
 
 if __name__ == "__main__":
     import asyncio
+    import sys
+    from typing import Literal
+
+    # Default to SSE transport if not specified, explicitly cast to Literal type
+    transport_arg = sys.argv[1] if len(sys.argv) > 1 else "sse"
+    transport: Literal["stdio",
+                       "sse"] = "sse" if transport_arg == "sse" else "stdio"
+
     try:
-        asyncio.run(mcp.run("sse"))
+        # Support both SSE and stdio transport
+        asyncio.run(mcp.run(transport=transport))
     except KeyboardInterrupt:
         logger.info("Server stopped by user")
     except Exception as e:

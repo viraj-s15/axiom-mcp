@@ -408,8 +408,8 @@ class AxiomMCP:
         for prompt in self._pending_prompts:
             self._prompt_manager.add_prompt(prompt)
 
-    async def run(self, transport: Literal["stdio", "sse"] = "stdio") -> None:
-        """Run the AxiomMCP server."""
+    async def run(self, transport: Literal["stdio", "sse"] = "sse") -> None:
+        """Run the AxiomMCP server with specified transport."""
         try:
             # Process all pending items before starting
             self._process_pending_tools()
@@ -427,97 +427,6 @@ class AxiomMCP:
         finally:
             # Ensure cleanup happens even on unexpected exits
             await self.shutdown()
-
-    async def list_tools(self) -> list[MCPTool]:
-        """List all available tools."""
-        # Process any pending tools first
-        self._process_pending_tools()
-
-        tools = []
-        for tool_cls in self._tool_manager._tools.values():
-            tool = MCPTool(
-                name=tool_cls.metadata.name,
-                description=tool_cls.metadata.description,
-                inputSchema=tool_cls.metadata.validation.input_schema
-                if tool_cls.metadata.validation
-                else {},
-            )
-            tools.append(tool)  # Actually append the tool to the list
-
-        return tools  # Return the populated list
-
-    def get_context(self) -> "Context":
-        """
-        Returns a Context object. Note that the context will only be valid
-        during a request; outside a request, most methods will error.
-        """
-        try:
-            request_context = self._mcp_server.request_context
-        except LookupError:
-            request_context = None
-
-        return Context(
-            request_context=cast(RequestContext, request_context),
-            resource_manager=self._resource_manager,
-        )
-
-    async def call_tool(
-        self, name: str, arguments: dict
-    ) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
-        """Call a tool by name with arguments."""
-        context = self.get_context()
-        tool_context = ToolContext(
-            dry_run=False,
-            cache_enabled=True,
-            validation_enabled=True
-        )
-        result = await self._tool_manager.execute_tool(name, arguments, context=tool_context)
-        converted_result = _convert_to_content(result)
-        return converted_result
-
-    async def list_resources(self) -> list[MCPResource]:
-        """List all available resources."""
-        # Process any pending resources first
-        await self._process_pending_resources()
-
-        resources = []
-        for resource in self._resource_manager.list_resources():
-            mcp_resource = MCPResource(
-                uri=AnyUrl(str(resource.uri)),  # Convert to AnyUrl explicitly
-                name=resource.name or "",  # Ensure name is never None
-                description=resource.description,
-                mimeType=resource.mime_type,
-            )
-            resources.append(mcp_resource)
-        return resources
-
-    async def list_resource_templates(self) -> list[MCPResourceTemplate]:
-        """List all available resource templates."""
-        # Process any pending resources first
-        await self._process_pending_resources()
-
-        templates = self._resource_manager.list_templates()
-        return [
-            MCPResourceTemplate(
-                # Convert AnyUrl to str for template URI
-                uriTemplate=str(template.uri),
-                name=template.name or "",
-                description=template.description or "",
-            )
-            for template in templates
-        ]
-
-    async def read_resource(self, uri: AnyUrl | str) -> str | bytes:
-        """Read a resource by URI."""
-        resource = await self._resource_manager.get_resource(str(uri))  # Convert AnyUrl to str
-        if not resource:
-            raise ResourceError(f"Unknown resource: {uri}")
-
-        try:
-            return await resource.read()
-        except Exception as e:
-            logger.error(f"Error reading resource {uri}: {e}")
-            raise ResourceError(str(e))
 
     async def run_stdio_async(self) -> None:
         """Run the server using stdio transport."""
@@ -854,6 +763,116 @@ class AxiomMCP:
             )
         finally:
             await sse_handler.shutdown()
+
+    async def list_tools(self) -> list[MCPTool]:
+        """List all available tools."""
+        # Process any pending tools first
+        self._process_pending_tools()
+
+        tools = []
+        for tool_cls in self._tool_manager._tools.values():
+            tool = MCPTool(
+                name=tool_cls.metadata.name,
+                description=tool_cls.metadata.description,
+                inputSchema=tool_cls.metadata.validation.input_schema
+                if tool_cls.metadata.validation
+                else {},
+            )
+            tools.append(tool)  # Actually append the tool to the list
+
+        return tools  # Return the populated list
+
+    def get_context(self) -> "Context":
+        """
+        Returns a Context object. Note that the context will only be valid
+        during a request; outside a request, most methods will error.
+        """
+        try:
+            request_context = self._mcp_server.request_context
+        except LookupError:
+            request_context = None
+
+        return Context(
+            request_context=cast(RequestContext, request_context),
+            resource_manager=self._resource_manager,
+        )
+
+    async def call_tool(
+        self, name: str, arguments: dict
+    ) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
+        """Call a tool by name with arguments."""
+        context = self.get_context()
+        tool_context = ToolContext(
+            dry_run=False,
+            cache_enabled=True,
+            validation_enabled=True
+        )
+        result = await self._tool_manager.execute_tool(name, arguments, context=tool_context)
+
+        # If result is already in the correct MCP content type format, return as sequence
+        if isinstance(result, (TextContent, ImageContent, EmbeddedResource)):
+            return [result]
+
+        # If result is a dict with "type" and "content", convert to proper MCP content type
+        if isinstance(result, dict) and "type" in result:
+            if result["type"] == "text":
+                content = result.get("content")
+                if isinstance(content, str):
+                    return [TextContent(type="text", text=content)]
+                else:
+                    # For structured content, convert to JSON string
+                    return [TextContent(type="text", text=json.dumps(content))]
+            elif result["type"] == "image":
+                return [ImageContent(**result)]
+            elif result["type"] == "resource":
+                return [EmbeddedResource(**result)]
+
+        # For any other type of result, convert using the utility function
+        return _convert_to_content(result)
+
+    async def list_resources(self) -> list[MCPResource]:
+        """List all available resources."""
+        # Process any pending resources first
+        await self._process_pending_resources()
+
+        resources = []
+        for resource in self._resource_manager.list_resources():
+            mcp_resource = MCPResource(
+                uri=AnyUrl(str(resource.uri)),  # Convert to AnyUrl explicitly
+                name=resource.name or "",  # Ensure name is never None
+                description=resource.description,
+                mimeType=resource.mime_type,
+            )
+            resources.append(mcp_resource)
+        return resources
+
+    async def list_resource_templates(self) -> list[MCPResourceTemplate]:
+        """List all available resource templates."""
+        # Process any pending resources first
+        await self._process_pending_resources()
+
+        templates = self._resource_manager.list_templates()
+        return [
+            MCPResourceTemplate(
+                # Convert AnyUrl to str for template URI
+                uriTemplate=str(template.uri),
+                name=template.name or "",
+                description=template.description or "",
+            )
+            for template in templates
+        ]
+
+    async def read_resource(self, uri: AnyUrl | str) -> str | bytes:
+        """Read a resource by URI."""
+        resource = await self._resource_manager.get_resource(str(uri))  # Convert AnyUrl to str
+        if not resource:
+            raise ResourceError(f"Unknown resource: {uri}")
+
+        try:
+            return await resource.read()
+        except Exception as e:
+            logger.error(f"Error reading resource {uri}: {e}")
+            raise ResourceError(str(e))
 
     async def list_prompts(self) -> list[MCPPrompt]:
         """List all available prompts."""
