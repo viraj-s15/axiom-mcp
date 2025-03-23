@@ -438,300 +438,31 @@ class AxiomMCP:
             )
 
     async def run_sse_async(self) -> None:
-        """Run the server using SSE transport with improved error handling."""
+        """Run the server using SSE transport."""
         from starlette.applications import Starlette
-        from starlette.routing import Route
-        from starlette.responses import StreamingResponse, JSONResponse
-        from starlette.background import BackgroundTask
-        import asyncio
-        from .exceptions import (
-            ConnectionResetError,
-            StreamInterruptedError,
-            ServiceUnavailableError,
-            ToolRecoveryStrategy
-        )
+        from starlette.routing import Route, Mount
+        from starlette.middleware.cors import CORSMiddleware
+        import uvicorn
+        from mcp.server.sse import SseServerTransport
+        
+        sse = SseServerTransport("/messages/")
 
-        # Process all pending items BEFORE creating SSE handler
-        self._process_pending_tools()
-        await self._process_pending_resources()
-        self._process_pending_prompts()
-
-        # Initialize tool manager
-        await self._tool_manager.initialize()
-
-        class SseHandler:
-            def __init__(self, mcp_server):
-                self.mcp_server = mcp_server
-                self.connections = {}
-                self._connection_id = 0
-                self._active_tasks = set()
-                self._recovery_strategy = ToolRecoveryStrategy(
-                    max_retries=3,
-                    retry_delay=1.0,
-                    exponential_backoff=True
+        async def handle_sse(request):
+            async with sse.connect_sse(
+                request.scope, request.receive, request._send
+            ) as streams:
+                await self._mcp_server.run(
+                    streams[0],
+                    streams[1],
+                    self._mcp_server.create_initialization_options(),
                 )
-                self._shutdown_event = asyncio.Event()
-
-            async def handle_sse_connect(self, request):
-                connection_id = str(self._connection_id)
-                self._connection_id += 1
-
-                headers = {
-                    "Cache-Control": "no-cache",
-                    "Content-Type": "text/event-stream",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                    "Access-Control-Allow-Origin": "*",
-                }
-
-                message_queue = asyncio.Queue()
-                mcp_queue = asyncio.Queue()
-                self.connections[connection_id] = {
-                    "message_queue": message_queue,
-                    "mcp_queue": mcp_queue,
-                    "task_group": None,
-                    "active": True
-                }
-
-                # Send initial connection ID
-                await message_queue.put({"event": "connected", "data": connection_id})
-
-                async def event_generator():
-                    try:
-                        async with asyncio.TaskGroup() as tg:
-                            self.connections[connection_id]["task_group"] = tg
-                            # Start MCP server handler task
-                            mcp_task = tg.create_task(
-                                self._handle_mcp_connection(
-                                    connection_id,
-                                    message_queue,
-                                    mcp_queue
-                                )
-                            )
-
-                            # Event stream handler task
-                            while self.connections[connection_id]["active"]:
-                                try:
-                                    message = await asyncio.wait_for(
-                                        message_queue.get(),
-                                        timeout=30.0  # 30 second timeout
-                                    )
-
-                                    if message is None:  # Sentinel to close
-                                        break
-
-                                    if "event" in message:
-                                        yield f"event: {message['event']}\n"
-
-                                    if "data" in message:
-                                        data = message["data"]
-                                        if isinstance(data, (dict, list)):
-                                            data = json.dumps(data)
-                                        for line in str(data).splitlines():
-                                            yield f"data: {line}\n"
-
-                                    yield "\n"
-
-                                    # Send keep-alive comment every 15 seconds
-                                    if not message.get("event") == "keepalive":
-                                        await asyncio.sleep(15)
-                                        await message_queue.put({"event": "keepalive", "data": ""})
-
-                                except asyncio.TimeoutError:
-                                    # Send keep-alive on timeout
-                                    yield ": keepalive\n\n"
-                                    continue
-                                except asyncio.CancelledError:
-                                    break
-                                except Exception as e:
-                                    logger.error(
-                                        f"Error processing SSE message: {e}")
-                                    if not await self._attempt_recovery(e, connection_id):
-                                        break
-
-                    except* Exception as eg:
-                        for e in eg.exceptions:
-                            logger.error(
-                                f"Task error in connection {connection_id}: {e}")
-                    finally:
-                        await self._cleanup_connection(connection_id)
-
-                return StreamingResponse(
-                    event_generator(),
-                    headers=headers,
-                    media_type="text/event-stream"
-                )
-
-            async def _handle_mcp_connection(
-                self,
-                connection_id: str,
-                message_queue: asyncio.Queue,
-                mcp_queue: asyncio.Queue,
-            ) -> None:
-                """Handle MCP server connection."""
-                try:
-                    class MessageReader:
-                        def __init__(self, queue: asyncio.Queue):
-                            self.queue = queue
-                            self._closed = False
-
-                        async def read(self):
-                            if self._closed:
-                                return None
-                            try:
-                                message = await self.queue.get()
-                                if message is None:  # Check for sentinel
-                                    self._closed = True
-                                    return None
-                                return message.get("mcp_message")
-                            except asyncio.CancelledError:
-                                self._closed = True
-                                return None
-
-                        async def __aenter__(self):
-                            return self
-
-                        async def __aexit__(self, exc_type, exc_val, exc_tb):
-                            self._closed = True
-
-                        def __aiter__(self):
-                            return self
-
-                        async def __anext__(self):
-                            if self._closed:
-                                raise StopAsyncIteration
-                            message = await self.read()
-                            if message is None:
-                                raise StopAsyncIteration
-                            return message
-
-                    class MessageWriter:
-                        def __init__(self, queue: asyncio.Queue):
-                            self.queue = queue
-                            self._closed = False
-
-                        async def write(self, message):
-                            if not self._closed:
-                                try:
-                                    await self.queue.put({"event": "message", "data": message})
-                                except asyncio.CancelledError:
-                                    self._closed = True
-
-                        async def __aenter__(self):
-                            return self
-
-                        async def __aexit__(self, exc_type, exc_val, exc_tb):
-                            self._closed = True
-
-                    reader = MessageReader(mcp_queue)
-                    writer = MessageWriter(message_queue)
-
-                    await self.mcp_server.run(
-                        reader,
-                        writer,
-                        self.mcp_server.create_initialization_options()
-                    )
-
-                except Exception as e:
-                    logger.error(
-                        f"MCP server error for connection {connection_id}: {e}")
-                    await message_queue.put(None)  # Signal to close connection
-                    raise
-
-            async def _attempt_recovery(
-                self,
-                error: Exception,
-                connection_id: str
-            ) -> bool:
-                """Attempt to recover from an error."""
-                if isinstance(error, (ConnectionResetError, StreamInterruptedError)):
-                    return await error.attempt_recovery()
-                return False
-
-            async def _cleanup_connection(self, connection_id: str) -> None:
-                """Clean up resources associated with a connection."""
-                if connection_id in self.connections:
-                    conn_data = self.connections[connection_id]
-                    conn_data["active"] = False
-
-                    try:
-                        await conn_data["message_queue"].put(None)
-                        await conn_data["mcp_queue"].put(None)
-
-                        if conn_data["task_group"]:
-                            for task in conn_data["task_group"]._tasks:
-                                if not task.done():
-                                    task.cancel()
-
-                    except Exception as e:
-                        logger.error(f"Error during connection cleanup: {e}")
-                    finally:
-                        del self.connections[connection_id]
-                        logger.info(f"SSE connection {connection_id} closed")
-
-            async def handle_message(self, request):
-                """Handle messages from client to server."""
-                try:
-                    body = await request.json()
-                    connection_id = body.get("connection_id")
-                    message = body.get("message")
-
-                    if not connection_id or not message:
-                        return JSONResponse(
-                            {"error": "Missing connection_id or message"},
-                            status_code=400
-                        )
-
-                    if connection_id not in self.connections:
-                        return JSONResponse(
-                            {"error": f"Connection {connection_id} not found"},
-                            status_code=404
-                        )
-
-                    conn_data = self.connections[connection_id]
-                    if not conn_data["active"]:
-                        return JSONResponse(
-                            {"error": f"Connection {connection_id} is closed"},
-                            status_code=400
-                        )
-
-                    await conn_data["mcp_queue"].put({"mcp_message": message})
-                    return JSONResponse({"status": "message sent"}, status_code=202)
-
-                except Exception as e:
-                    logger.error(f"Error handling client message: {e}")
-                    return JSONResponse({"error": str(e)}, status_code=500)
-
-            async def shutdown(self):
-                """Clean shutdown of all connections."""
-                try:
-                    self._shutdown_event.set()
-                    # Send shutdown signal to all connections
-                    shutdown_tasks = []
-                    for connection_id in list(self.connections.keys()):
-                        shutdown_tasks.append(
-                            self._cleanup_connection(connection_id)
-                        )
-
-                    if shutdown_tasks:
-                        await asyncio.gather(*shutdown_tasks, return_exceptions=True)
-
-                except Exception as e:
-                    logger.error(f"Error during shutdown: {e}")
-                finally:
-                    self.connections.clear()
-
-        # Create SSE handler and Starlette app
-        sse_handler = SseHandler(self._mcp_server)
 
         app = Starlette(
             debug=self.settings.debug,
             routes=[
-                Route("/sse", endpoint=sse_handler.handle_sse_connect),
-                Route("/messages", endpoint=sse_handler.handle_message,
-                      methods=["POST"]),
+                Route("/sse", endpoint=handle_sse),
+                Mount("/messages/", app=sse.handle_post_message),
             ],
-            on_shutdown=[sse_handler.shutdown]
         )
 
         # Add CORS middleware
@@ -745,24 +476,13 @@ class AxiomMCP:
 
         config = uvicorn.Config(
             app,
-            host="127.0.0.1",
+            host=self.settings.host,
             port=self.settings.port,
             log_level=self.settings.log_level.lower(),
             workers=1,
         )
         server = uvicorn.Server(config)
-
-        try:
-            await server.serve()
-        except Exception as e:
-            logger.error(f"Server error: {e}")
-            raise ServiceUnavailableError(
-                "SSE server failed",
-                recovery_strategy=ToolRecoveryStrategy(),
-                error=e
-            )
-        finally:
-            await sse_handler.shutdown()
+        await server.serve()
 
     async def list_tools(self) -> list[MCPTool]:
         """List all available tools."""

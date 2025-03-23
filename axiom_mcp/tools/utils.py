@@ -37,7 +37,8 @@ def validate_schema(schema: dict[str, Any], data: Any) -> None:
     try:
         if isinstance(schema, dict):
             # Create a dynamic Pydantic model for validation
-            model = type("DynamicModel", (BaseModel,), {"__annotations__": schema})
+            model = type("DynamicModel", (BaseModel,),
+                         {"__annotations__": schema})
             if isinstance(data, dict):
                 model(**data)
             else:
@@ -87,6 +88,7 @@ def tool(
             version=version,
             description=description or cls.__doc__ or "",
             author=author,
+            validation=None,
         )
         cls.metadata = metadata  # type: ignore
         return cls
@@ -139,7 +141,7 @@ def batch_tool(
 
             results = []
             for i in range(0, len(batch_input), size):
-                batch = batch_input[i : i + size]
+                batch = batch_input[i: i + size]
                 batch_results = await asyncio.gather(
                     *(fn(*args, **{**kwargs, **item}) for item in batch)
                 )
@@ -165,7 +167,8 @@ def with_validation(
     ) -> Callable[Concatenate[Tool, P], Awaitable[R]]:
         if not asyncio.iscoroutinefunction(func):
             func = cast(
-                Callable[Concatenate[Tool, P], Awaitable[R]], ensure_async(func)
+                Callable[Concatenate[Tool, P],
+                         Awaitable[R]], ensure_async(func)
             )
 
         @wraps(func)
@@ -237,7 +240,8 @@ def cacheable(
     ) -> Callable[Concatenate[Tool, P], Awaitable[R]]:
         if not asyncio.iscoroutinefunction(func):
             func = cast(
-                Callable[Concatenate[Tool, P], Awaitable[R]], ensure_async(func)
+                Callable[Concatenate[Tool, P],
+                         Awaitable[R]], ensure_async(func)
             )
 
         @wraps(func)
@@ -256,7 +260,8 @@ def cacheable(
                     json.dumps(kwargs, sort_keys=True),
                     json.dumps(self.context.model_dump(), sort_keys=True),
                 ]
-                cache_key = hashlib.sha256(":".join(key_parts).encode()).hexdigest()
+                cache_key = hashlib.sha256(
+                    ":".join(key_parts).encode()).hexdigest()
 
             # Check cache
             current_time = datetime.now(UTC).timestamp()
@@ -276,7 +281,8 @@ def cacheable(
 
 
 def with_dry_run(
-    simulation_func: Callable[Concatenate[Tool, P], Awaitable[Any]] | None = None,
+    simulation_func: Callable[Concatenate[Tool, P],
+                              Awaitable[Any]] | None = None,
 ) -> Callable[
     [Callable[Concatenate[Tool, P], Awaitable[R]]],
     Callable[Concatenate[Tool, P], Awaitable[R]],
@@ -288,7 +294,8 @@ def with_dry_run(
     ) -> Callable[Concatenate[Tool, P], Awaitable[R]]:
         if not asyncio.iscoroutinefunction(func):
             func = cast(
-                Callable[Concatenate[Tool, P], Awaitable[R]], ensure_async(func)
+                Callable[Concatenate[Tool, P],
+                         Awaitable[R]], ensure_async(func)
             )
 
         @wraps(func)

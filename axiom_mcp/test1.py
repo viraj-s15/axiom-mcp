@@ -21,7 +21,7 @@ try:
     print("Running server...")
     # Force debug mode and log all details
     mcp.settings.debug = True
-    mcp.settings.log_level = "debug"
+    mcp.settings.log_level = "DEBUG"
 
     # Get server info
     print(f"Tools: {asyncio.run(mcp.list_tools())}")
