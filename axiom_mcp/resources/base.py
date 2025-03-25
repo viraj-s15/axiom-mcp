@@ -3,33 +3,34 @@
 import abc
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from enum import Enum
-from typing import Any
+from enum import Enum, auto
+from typing import Any, Union, Annotated
 
 from pydantic import (
     AnyUrl,
     BaseModel,
     ConfigDict,
     Field,
+    UrlConstraints,
     ValidationInfo,
     field_validator,
 )
 
 
-class ResourceType(str, Enum):
-    """Enumeration of resource types."""
+class ResourceType(Enum):
+    """Types of resources supported by AxiomMCP."""
 
-    TEXT = "text"
-    BINARY = "binary"
-    FILE = "file"
-    HTTP = "http"
-    DIRECTORY = "directory"
-    FUNCTION = "function"
-    STREAM = "stream"
-    DATABASE = "database"
-    TEMPLATE = "template"
-    CACHE = "cache"
-    COMPRESSED = "compressed"
+    TEMPLATE = auto()
+    FUNCTION = auto()
+    FILE = auto()
+    TEXT = auto()
+    BINARY = auto()
+    HTTP = auto()
+    DATABASE = auto()
+    CACHE = auto()
+    COMPRESSED = auto()
+    DIRECTORY = auto()
+    STREAM = auto()  # Add STREAM type
 
 
 class ResourceValidationError(ValueError):
@@ -44,8 +45,7 @@ class ResourceMetadata(BaseModel):
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
     modified_at: datetime = Field(default_factory=datetime.utcnow)
-    size: int | None = Field(
-        default=None, description="Size in bytes if known", ge=0)
+    size: int | None = Field(default=None, description="Size in bytes if known", ge=0)
     content_hash: str | None = Field(
         default=None, description="Content hash if available"
     )
@@ -55,8 +55,7 @@ class ResourceMetadata(BaseModel):
     compression: str | None = Field(
         default=None, description="Compression algorithm used"
     )
-    mime_type: str | None = Field(
-        default=None, description="Content MIME type")
+    mime_type: str | None = Field(default=None, description="Content MIME type")
 
 
 class Resource(BaseModel, abc.ABC):
@@ -64,10 +63,8 @@ class Resource(BaseModel, abc.ABC):
 
     model_config = ConfigDict(validate_default=True)
 
-    uri: AnyUrl = Field(
-        ...,
-        description="URI of the resource",
-        json_schema_extra={"host_required": False},
+    uri: Annotated[AnyUrl, UrlConstraints(host_required=False)] = Field(
+        default=..., description="URI of the resource"
     )
     name: str | None = Field(
         description="Name of the resource",
@@ -82,7 +79,9 @@ class Resource(BaseModel, abc.ABC):
         description="MIME type of the resource content",
         pattern=r"^[a-zA-Z0-9]+/[a-zA-Z0-9\-+.]+$",
     )
-    resource_type: ResourceType = Field(description="Type of the resource")
+    resource_type: ResourceType = Field(
+        default=ResourceType.TEMPLATE, description="Type of resource"
+    )
     metadata: ResourceMetadata = Field(default_factory=ResourceMetadata)
 
     @field_validator("name", mode="before")
@@ -96,18 +95,17 @@ class Resource(BaseModel, abc.ABC):
         raise ResourceValidationError()
 
     @abc.abstractmethod
-    async def read(self) -> str | bytes:
+    async def read(self) -> Union[str, bytes]:
         """Read the resource content."""
         pass
 
-    async def read_stream(self) -> AsyncGenerator[str | bytes, None]:
+    async def read_stream(self) -> AsyncGenerator[Union[str, bytes], None]:
         """Stream the resource content. Override for streaming support."""
         yield await self.read()
 
-    async def write(self, content: str | bytes) -> None:
+    async def write(self, content: Union[str, bytes]) -> None:
         """Write content to the resource if supported."""
-        raise NotImplementedError(
-            "Write operation not supported for this resource")
+        raise NotImplementedError("Write operation not supported for this resource")
 
     async def exists(self) -> bool:
         """Check if the resource exists."""
@@ -120,8 +118,7 @@ class Resource(BaseModel, abc.ABC):
 
     async def delete(self) -> None:
         """Delete the resource if supported."""
-        raise NotImplementedError(
-            "Delete operation not supported for this resource")
+        raise NotImplementedError("Delete operation not supported for this resource")
 
     async def recover(self) -> bool:
         """Attempt to recover the resource after an error.

@@ -159,8 +159,7 @@ class PromptManager:
             metrics.average_render_time = render_time
         else:
             metrics.average_render_time = (
-                metrics.average_render_time *
-                (metrics.total_calls - 1) + render_time
+                metrics.average_render_time * (metrics.total_calls - 1) + render_time
             ) / metrics.total_calls
 
         metrics.last_used = now

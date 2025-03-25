@@ -1,44 +1,45 @@
 """Example math server demonstrating basic axiom_mcp functionality with simple arithmetic."""
+
 import logging
+from pathlib import Path
 import sys
 from axiom_mcp import AxiomMCP
 from axiom_mcp.prompts.base import PromptResponse, Message, UserMessage
-from axiom_mcp.tools.base import Tool, ToolMetadata, ToolValidation
+from axiom_mcp.tools.base import Tool, ToolMetadata, ToolValidation, ToolContext
 from typing import Dict, Any
 
-# Configure logging
-logging.basicConfig(level=logging.INFO,
-                    format="%(levelname)s: %(message)s", stream=sys.stdout)
+logging.basicConfig(
+    level=logging.INFO, format="%(levelname)s: %(message)s", stream=sys.stdout
+)
 logger = logging.getLogger(__name__)
 
-# Configure MCP with correct port and settings
-mcp = AxiomMCP("MathServer",
-               warn_on_duplicate_resources=False,
-               warn_on_duplicate_prompts=False,
-               port=8888,
-               debug=True)  # Enable debug mode for better error messages
+mcp = AxiomMCP(
+    "MathServer",
+    warn_on_duplicate_resources=False,
+    warn_on_duplicate_prompts=False,
+    port=8888,
+    debug=True,
+)
 
-# Define common input schema for all math operations
 number_input_schema = {
     "type": "object",
     "properties": {
         "a": {"type": "number", "description": "First number"},
-        "b": {"type": "number", "description": "Second number"}
+        "b": {"type": "number", "description": "Second number"},
     },
-    "required": ["a", "b"]
+    "required": ["a", "b"],
 }
 
 
 class AddTool(Tool):
     """Tool for adding two numbers."""
+
     metadata = ToolMetadata(
         name="add",
         description="Add two numbers together",
-        validation=ToolValidation(
-            input_schema=number_input_schema
-        ),
+        validation=ToolValidation(input_schema=number_input_schema),
         author="MathServer",
-        version="1.0.0"
+        version="1.0.0",
     )
 
     async def execute(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -47,23 +48,17 @@ class AddTool(Tool):
         result = a + b
         return {
             "type": "text",
-            "content": {
-                "operation": "addition",
-                "a": a,
-                "b": b,
-                "result": result
-            }
+            "content": {"operation": "addition", "a": a, "b": b, "result": result},
         }
 
 
 class SubtractTool(Tool):
     """Tool for subtracting numbers."""
+
     metadata = ToolMetadata(
         name="subtract",
         description="Subtract b from a",
-        validation=ToolValidation(
-            input_schema=number_input_schema
-        ),
+        validation=ToolValidation(input_schema=number_input_schema),
         author="MathServer",
         version="1.0.0",  # Added version for compatibility
     )
@@ -73,24 +68,18 @@ class SubtractTool(Tool):
         logger.info(f"Subtracting {b} from {a}")
         result = a - b
         return {
-            "type": "text",  # Added for client compatibility
-            "content": {
-                "operation": "subtraction",
-                "a": a,
-                "b": b,
-                "result": result
-            }
+            "type": "text",
+            "content": {"operation": "subtraction", "a": a, "b": b, "result": result},
         }
 
 
 class MultiplyTool(Tool):
     """Tool for multiplying numbers."""
+
     metadata = ToolMetadata(
         name="multiply",
         description="Multiply two numbers",
-        validation=ToolValidation(
-            input_schema=number_input_schema
-        ),
+        validation=ToolValidation(input_schema=number_input_schema),
         author="MathServer",
         version="1.0.0",  # Added version
     )
@@ -105,19 +94,18 @@ class MultiplyTool(Tool):
                 "operation": "multiplication",
                 "a": a,
                 "b": b,
-                "result": result
-            }
+                "result": result,
+            },
         }
 
 
 class DivideTool(Tool):
     """Tool for dividing numbers."""
+
     metadata = ToolMetadata(
         name="divide",
         description="Divide a by b",
-        validation=ToolValidation(
-            input_schema=number_input_schema
-        ),
+        validation=ToolValidation(input_schema=number_input_schema),
         author="MathServer",
         version="1.0.0",  # Added version
     )
@@ -130,12 +118,7 @@ class DivideTool(Tool):
         result = a / b
         return {
             "type": "text",  # Added for client compatibility
-            "content": {
-                "operation": "division",
-                "a": a,
-                "b": b,
-                "result": result
-            }
+            "content": {"operation": "division", "a": a, "b": b, "result": result},
         }
 
 
@@ -150,8 +133,7 @@ class MathPromptResponse(PromptResponse):
 
     def __call__(self) -> UserMessage:
         return UserMessage(
-            content=f"Please calculate {self.a} {self.operation} {self.b}",
-            role="user"
+            content=f"Please calculate {self.a} {self.operation} {self.b}", role="user"
         )
 
 
@@ -162,22 +144,15 @@ mcp._tool_manager.register_tool(MultiplyTool)
 mcp._tool_manager.register_tool(DivideTool)
 
 
-@mcp.resource("math://result/{operation}/{a}/{b}")
-async def math_resource(operation: str, a: float, b: float) -> str:
-    """Perform a math operation and return the result"""
-    tools = {
-        "add": AddTool,
-        "subtract": SubtractTool,
-        "multiply": MultiplyTool,
-        "divide": DivideTool
-    }
+@mcp.resource("greeting://{name}")
+def say_hello(name: str) -> str:
+    return f"Hello, {name}!"
 
-    if operation not in tools:
-        raise ValueError(f"Unknown operation: {operation}")
 
-    tool = tools[operation](context=None)
-    result = await tool.execute({"a": a, "b": b})
-    return f"Math {operation} result: {result['content']['result']}"
+@mcp.resource("dir://desktop")
+def list_some_random_files() -> list[str]:
+    desktop = Path.home() / "Documents"
+    return [str(f) for f in desktop.iterdir()]
 
 
 @mcp.prompt()
@@ -194,8 +169,7 @@ if __name__ == "__main__":
 
     # Default to SSE transport if not specified, explicitly cast to Literal type
     transport_arg = sys.argv[1] if len(sys.argv) > 1 else "sse"
-    transport: Literal["stdio",
-                       "sse"] = "sse" if transport_arg == "sse" else "stdio"
+    transport: Literal["stdio", "sse"] = "sse" if transport_arg == "sse" else "stdio"
 
     try:
         # Support both SSE and stdio transport

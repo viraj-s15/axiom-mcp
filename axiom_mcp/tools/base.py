@@ -4,7 +4,6 @@ import asyncio
 import inspect
 import logging
 from collections.abc import AsyncGenerator, Callable
-from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field, ValidationError
@@ -19,8 +18,7 @@ class ToolDependency(BaseModel):
 
     name: str = Field(..., description="Name of the dependency")
     version: str | None = Field(None, description="Version constraint")
-    optional: bool = Field(
-        default=False, description="Whether dependency is optional")
+    optional: bool = Field(default=False, description="Whether dependency is optional")
     source: str = Field(default="pip", description="Source of the dependency")
     command: str | None = Field(
         None, description="Custom install command if not using standard source"
@@ -50,10 +48,12 @@ class ToolMetadata(BaseModel):
     name: str = Field(..., description="Name of the tool")
     version: str = Field(default="1.0.0", description="Tool version")
     description: str = Field(
-        default="", description="Description of what the tool does")
+        default="", description="Description of what the tool does"
+    )
     author: str | None = Field(None, description="Tool author")
-    tags: list[str] = Field(default_factory=list,
-                            description="Tool tags for categorization")
+    tags: list[str] = Field(
+        default_factory=list, description="Tool tags for categorization"
+    )
     dependencies: list[ToolDependency] = Field(
         default_factory=list,
         description="Tool dependencies",
@@ -70,6 +70,7 @@ class ToolMetadata(BaseModel):
 
 class ToolContext(BaseModel):
     """Execution context for tools."""
+
     model_config = {"arbitrary_types_allowed": True}
 
     dry_run: bool = False
@@ -77,8 +78,7 @@ class ToolContext(BaseModel):
     timeout: float | None = None
     validation_enabled: bool = True
     state: dict[str, Any] = Field(default_factory=dict)
-    logger: logging.Logger = Field(
-        default_factory=lambda: logging.getLogger(__name__))
+    logger: logging.Logger = Field(default_factory=lambda: logging.getLogger(__name__))
 
     def debug(self, message: str) -> None:
         """Log a debug message."""
@@ -213,11 +213,9 @@ class Tool:
             )
             if isinstance(result, (list, tuple)):
                 for item in result:
-                    model(**item if isinstance(item, dict)
-                          else {"value": item})
+                    model(**item if isinstance(item, dict) else {"value": item})
             else:
-                model(**result if isinstance(result, dict)
-                      else {"value": result})
+                model(**result if isinstance(result, dict) else {"value": result})
         except ValidationError as e:
             if self.metadata.validation.strict:
                 raise ToolError(
@@ -227,7 +225,9 @@ class Tool:
             else:
                 self.context.warning(f"Output validation warning: {str(e)}")
 
-    def _get_validation_model(self, key: str, schema: dict[str, Any]) -> type[BaseModel]:
+    def _get_validation_model(
+        self, key: str, schema: dict[str, Any]
+    ) -> type[BaseModel]:
         """Get or create a Pydantic model for validation."""
         cache_key = f"{self.metadata.name}:{key}"
         if cache_key not in self._validation_cache:
@@ -356,11 +356,7 @@ class Tool:
 
             async def execute(self, args: dict[str, Any]) -> Any:
                 # Convert args to match function signature
-                kwargs = {
-                    name: args[name]
-                    for name in sig.parameters
-                    if name in args
-                }
+                kwargs = {name: args[name] for name in sig.parameters if name in args}
 
                 # Call function and handle async/sync
                 if asyncio.iscoroutinefunction(fn):
@@ -373,31 +369,31 @@ class Tool:
     def _type_to_schema(type_hint: Any) -> dict[str, Any]:
         """Convert a type hint to JSON Schema."""
         # Handle basic types
-        if type_hint == str:
+        if isinstance(type_hint, str):
             return {"type": "string"}
-        if type_hint == int:
+        if isinstance(type_hint, int):
             return {"type": "integer"}
-        if type_hint == float:
+        if isinstance(type_hint, float):
             return {"type": "number"}
-        if type_hint == bool:
+        if isinstance(type_hint, bool):
             return {"type": "boolean"}
-        if type_hint == list:
+        if isinstance(type_hint, list):
             return {"type": "array"}
-        if type_hint == dict:
+        if isinstance(type_hint, dict):
             return {"type": "object"}
 
         # Handle optional types
         origin = getattr(type_hint, "__origin__", None)
         if origin is not None:
-            if origin == list:
+            if isinstance(origin, list):
                 item_type = type_hint.__args__[0]
                 return {
                     "type": "array",
                     "items": Tool._type_to_schema(item_type),
                 }
-            if origin == dict:
+            if isinstance(origin, dict):
                 key_type, value_type = type_hint.__args__
-                if key_type == str:
+                if isinstance(key_type, str):
                     return {
                         "type": "object",
                         "additionalProperties": Tool._type_to_schema(value_type),

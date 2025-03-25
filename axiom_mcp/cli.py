@@ -1,4 +1,5 @@
 """Axiom MCP CLI tools."""
+
 import asyncio
 import sys
 import os
@@ -8,7 +9,6 @@ from typing import Annotated
 import typer
 from rich.console import Console
 
-from axiom_mcp import __version__
 
 # Configure console with immediate flush
 console = Console(file=sys.stdout, force_terminal=True)
@@ -75,12 +75,16 @@ def dev(
 
         # Parse file path to get module path
         file_path = Path(file_spec).resolve()
-        module_path = str(file_path).replace(
-            str(Path.cwd()) + os.sep, '').replace('/', '.').replace('.py', '')
+        module_path = (
+            str(file_path)
+            .replace(str(Path.cwd()) + os.sep, "")
+            .replace("/", ".")
+            .replace(".py", "")
+        )
 
         # Import the module and get server object
-        module = __import__(module_path, fromlist=['*'])
-        server = getattr(module, 'mcp', None)
+        module = __import__(module_path, fromlist=["*"])
+        server = getattr(module, "mcp", None)
 
         if not server:
             print("No server object 'mcp' found")
@@ -113,6 +117,7 @@ def dev(
 
     except Exception as e:
         import traceback
+
         print(f"ERROR: {e}")
         traceback.print_exc()
         sys.exit(1)
@@ -141,11 +146,11 @@ def main():
 
             # Import the module directly (like test1.py)
             print(f"Importing server from {file_path}...")
-            module_path = file_path.replace('/', '.').replace('.py', '')
+            module_path = file_path.replace("/", ".").replace(".py", "")
 
             try:
-                module = __import__(module_path, fromlist=['*'])
-                server = getattr(module, 'mcp')
+                module = __import__(module_path, fromlist=["*"])
+                server = getattr(module, "mcp")
 
                 print(f"Server object: {server}")
                 print(f"Server settings: {server.settings}")
@@ -173,6 +178,7 @@ def main():
 
             except Exception as e:
                 import traceback
+
                 print(f"ERROR: {e}")
                 traceback.print_exc()
                 sys.exit(1)
@@ -181,6 +187,7 @@ def main():
             app()
     except Exception as e:
         import traceback
+
         print(f"ERROR: {e}")
         traceback.print_exc()
         sys.exit(1)

@@ -66,10 +66,15 @@ def guess_resource_type(uri: str, content: str | bytes | None = None) -> Resourc
         "data": ResourceType.BINARY,
         "stream": ResourceType.STREAM,
         "function": ResourceType.FUNCTION,
+        "template": ResourceType.TEMPLATE,
     }
 
     if parsed.scheme in scheme_mapping:
         return scheme_mapping[parsed.scheme]
+
+    # Check if URI has template parameters (e.g., {param})
+    if "{" in uri and "}" in uri:
+        return ResourceType.TEMPLATE
 
     # Check content-based type
     if content is not None:
@@ -93,7 +98,10 @@ def create_resource_uri(
     if isinstance(path, Path):
         path = str(path.absolute())
 
-    scheme = resource_type.value if resource_type else "resource"
+    # Convert resource_type to string scheme if provided
+    scheme = (
+        str(resource_type.name.lower()) if resource_type else (scheme or "resource")
+    )
     return f"{scheme}://{path}" if "://" not in path else path
 
 

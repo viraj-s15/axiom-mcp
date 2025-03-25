@@ -1,12 +1,14 @@
 """Example echo server demonstrating basic axiom_mcp functionality."""
+
 import logging
 import sys
 from axiom_mcp import AxiomMCP
 from axiom_mcp.prompts.base import PromptResponse, Message, UserMessage
 
 # Configure logging
-logging.basicConfig(level=logging.INFO,
-                    format="%(levelname)s: %(message)s", stream=sys.stdout)
+logging.basicConfig(
+    level=logging.INFO, format="%(levelname)s: %(message)s", stream=sys.stdout
+)
 logger = logging.getLogger(__name__)
 
 
@@ -20,9 +22,12 @@ class EchoPromptResponse(PromptResponse):
 
 
 # Configure MCP with correct port
-mcp = AxiomMCP("Echo", warn_on_duplicate_resources=False,
-               warn_on_duplicate_prompts=False,
-               port=8888)  # Set port to match client expectation
+mcp = AxiomMCP(
+    "Echo",
+    warn_on_duplicate_resources=False,
+    warn_on_duplicate_prompts=False,
+    port=8888,
+)  # Set port to match client expectation
 
 
 @mcp.resource("echo://{message}")
@@ -48,4 +53,5 @@ def echo_prompt(message: str) -> PromptResponse:
 
 if __name__ == "__main__":
     import asyncio
+
     asyncio.run(mcp.run("sse"))

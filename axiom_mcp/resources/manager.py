@@ -4,28 +4,18 @@ import asyncio
 import contextlib
 import logging
 from collections import defaultdict
-from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from typing import Any, Final, Callable
+from typing import Any, Final, Dict, Optional
 
 from pydantic import AnyUrl, BaseModel, Field
 
 from axiom_mcp.resources.advanced_types import TemplateResource
 
 from ..exceptions import (
-    ResourceNotFoundError,
     ResourceUnavailableError,
-    UnknownResourceTypeError,
+    ResourceError,
 )
 from .base import Resource, ResourceType
-from .types import (
-    BinaryResource,
-    FileResource,
-    FunctionResource,
-    HttpResource,
-    StreamResource,
-    TextResource,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -102,10 +92,10 @@ class ResourcePool(BaseModel):
             async with self._global_lock:
                 if self._initialized:
                     return
-                self._cleanup_task = asyncio.create_task(
-                    self._periodic_cleanup())
+                self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
                 self._health_check_task = asyncio.create_task(
-                    self._periodic_health_check())
+                    self._periodic_health_check()
+                )
                 self._initialized = True
 
     async def _ensure_initialized(self) -> None:
@@ -280,8 +270,7 @@ class ResourcePool(BaseModel):
             if response_time > 0:
                 total_ops = stats.total_reads + stats.total_writes + stats.total_deletes
                 stats.average_response_time = (
-                    stats.average_response_time *
-                    (total_ops - 1) + response_time
+                    stats.average_response_time * (total_ops - 1) + response_time
                 ) / total_ops
 
     async def shutdown(self) -> None:
@@ -364,252 +353,58 @@ class ResourcePool(BaseModel):
 
 
 class ResourceManager:
-    """Core resource manager with pooling and monitoring."""
+    """Manages MCP resources."""
 
-    def __init__(self, pool_size: int = 100, warn_on_duplicate_resources: bool = True):
-        self.pool = ResourcePool(max_size=pool_size)
+    def __init__(self, warn_on_duplicate_resources: bool = True):
+        self._resources: Dict[str, Resource] = {}
         self.warn_on_duplicate_resources = warn_on_duplicate_resources
-        self._type_registry: dict[ResourceType, type[Resource]] = {
-            ResourceType.TEXT: TextResource,
-            ResourceType.BINARY: BinaryResource,
-            ResourceType.FILE: FileResource,
-            ResourceType.HTTP: HttpResource,
-            ResourceType.FUNCTION: FunctionResource,
-            ResourceType.STREAM: StreamResource,
-        }
+
+    async def add_resource(self, resource: Resource) -> Resource:
+        """Add a resource to the manager."""
+        uri_str = str(resource.uri)
+
+        if uri_str in self._resources:
+            if self.warn_on_duplicate_resources:
+                logger.warning(f"Resource already exists: {uri_str}")
+            return self._resources[uri_str]
+
+        self._resources[uri_str] = resource
+        return resource
+
+    async def get_resource(self, uri: str | AnyUrl) -> Optional[Resource]:
+        """Get a resource by URI, checking templates if no direct match."""
+        uri_str = str(uri)
+        logger.debug(f"Getting resource: {uri_str}")
+
+        # First check direct resources
+        if resource := self._resources.get(uri_str):
+            return resource
+
+        # Then check template resources
+        for resource in self._resources.values():
+            if isinstance(resource, TemplateResource):
+                if params := resource.matches(uri_str):
+                    try:
+                        return await resource.create_resource(uri_str, params)
+                    except Exception as e:
+                        logger.error(f"Error creating resource from template: {e}")
+                        continue
+
+        raise ResourceError(f"Resource not found: {uri_str}")
 
     def list_resources(self) -> list[Resource]:
         """List all registered resources."""
-        return list(self.pool.resources.values())
+        return list(self._resources.values())
 
     def list_templates(self) -> list[TemplateResource]:
-        """List all template resources."""
-        return [
-            resource for resource in self.pool.resources.values()
-            if isinstance(resource, TemplateResource)
-        ]
+        """List all registered template resources."""
+        return [r for r in self._resources.values() if isinstance(r, TemplateResource)]
 
-    async def add_resource(self, resource: Resource) -> None:
-        """Add a resource to the pool."""
-        if self.warn_on_duplicate_resources and str(resource.uri) in self.pool.resources:
-            logger.warning(f"Resource already exists: {resource.uri}")
-        await self.pool.add(resource)
-
-    async def add_template(self, fn: Callable, uri_template: str, **kwargs: Any) -> None:
-        """Add a template resource to the pool."""
-        resource = TemplateResource(
-            uri=AnyUrl(uri_template),
-            fn=fn,
-            resource_type=ResourceType.TEMPLATE,
-            **kwargs
-        )
-        await self.add_resource(resource)
-
-    def _handle_recovery_failure(self, uri: str) -> None:
-        """Handle resource recovery failure."""
-        raise ResourceUnavailableError()
-
-    def _handle_resource_not_found(self, uri: str) -> None:
-        """Handle resource not found scenario."""
-        raise ResourceNotFoundError(uri)
-
-    def _handle_unknown_resource_type(self, resource_type: ResourceType) -> None:
-        """Handle unknown resource type scenario."""
-        raise UnknownResourceTypeError(str(resource_type))
-
-    def _raise_resource_unavailable(self) -> None:
-        """Helper method to raise ResourceUnavailableError."""
-        raise ResourceUnavailableError()
-
-    async def _update_resource_health(
-        self, resource: Resource, stats: ResourceStats
-    ) -> None:
-        stats.health.last_check = datetime.now(UTC)
-
-        try:
-            recovery_successful = await resource.recover()
-
-            if not recovery_successful:
-                logger.warning(
-                    "Resource recovery failed for %s: recovery method returned False",
-                    resource.uri,
-                )
-                stats.health.is_healthy = False
-                stats.health.last_error = "Recovery failed"
-                self._raise_resource_unavailable()
-
-            stats.health.is_healthy = True
-            stats.health.error_count = 0
-            stats.health.last_error = None
-
-        except Exception as e:
-            logger.exception("Resource recovery failed with exception")
-            stats.health.is_healthy = False
-            stats.health.last_error = str(e)
-            stats.health.error_count += 1
-            raise ResourceUnavailableError() from e
-
-    async def recover_resource(self, uri: str) -> bool:
-        """Attempt to recover a resource that is in an unhealthy state."""
-        try:
-            resource = await self.get_resource(uri)
-            if resource is None:
-                return False
-            stats = self.pool.stats[str(resource.uri)]
-            recovery_successful = await resource.recover()
-            if not recovery_successful:
-                stats.health.is_healthy = False
-                self._raise_resource_unavailable()
-                return False
-            stats.health.is_healthy = True
-        except Exception:
-            logger.exception("Failed to recover resource: %s", uri)
-            return False
-        else:
-            logger.info("Successfully recovered resource: %s", uri)
-            return True
-
-    async def create_resource(
-        self, resource_type: ResourceType, uri: str | AnyUrl, **kwargs: Any
-    ) -> Resource:
-        """Create a new resource of the specified type."""
-        if resource_cls := self._type_registry.get(resource_type):
-            if isinstance(uri, str):
-                # Handle special cases for non-standard schemes
-                if "://" not in uri:
-                    uri = f"{resource_type.value}://{uri}"
-                uri = AnyUrl(uri)
-
-            resource = resource_cls(
-                uri=uri, resource_type=resource_type, **kwargs)
-            await self.pool.add(resource)
-            return resource
-        self._handle_unknown_resource_type(resource_type)
-        raise UnknownResourceTypeError(str(resource_type))
-
-    async def get_resource(self, uri: str) -> Resource | None:
-        """Get a resource by URI."""
-        return await self.pool.get(uri)
-
-    async def read_resource(
-        self, uri: str, create_if_missing: bool = False, **create_kwargs: Any
-    ) -> str | bytes:
+    async def read_resource(self, uri: str | AnyUrl) -> str | bytes:
         """Read content from a resource."""
-        start_time = datetime.now(UTC)
-        try:
-            if resource := await self.get_resource(uri):
-                content = await resource.read()
-                size = (
-                    len(content.encode()) if isinstance(
-                        content, str) else len(content)
-                )
-                await self.pool.update_stats(
-                    uri,
-                    "read",
-                    bytes_count=size,
-                    response_time=(datetime.now(UTC) -
-                                   start_time).total_seconds(),
-                )
-                return content
-
-            if create_if_missing:
-                resource = await self.create_resource(
-                    create_kwargs.pop("resource_type", ResourceType.TEXT),
-                    uri,
-                    **create_kwargs,
-                )
-                return await self.read_resource(str(resource.uri))
-            self._handle_resource_not_found(uri)
-        except Exception:
-            await self.pool.update_stats(uri, "read", error=True)
-            raise
-        else:
-            return b""
-
-    async def write_resource(
-        self,
-        uri: str,
-        content: str | bytes,
-        create_if_missing: bool = True,
-        **create_kwargs: Any,
-    ) -> None:
-        """Write content to a resource."""
-        start_time = datetime.now(UTC)
-        try:
-            resource = await self.get_resource(uri)
-            if not resource and create_if_missing:
-                resource = await self.create_resource(
-                    create_kwargs.pop("resource_type", ResourceType.TEXT),
-                    uri,
-                    **create_kwargs,
-                )
-            if not resource:
-                self._handle_resource_not_found(uri)
-                return
-
-            await resource.write(content)
-            size = len(content.encode()) if isinstance(
-                content, str) else len(content)
-            await self.pool.update_stats(
-                uri,
-                "write",
-                bytes_count=size,
-                response_time=(datetime.now(UTC) - start_time).total_seconds(),
-            )
-
-        except Exception:
-            await self.pool.update_stats(uri, "write", error=True)
-            raise
-
-    async def delete_resource(self, uri: str) -> None:
-        """Delete a resource."""
-        start_time = datetime.now(UTC)
-        try:
-            if resource := await self.get_resource(uri):
-                await resource.delete()
-                await self.pool._remove_resource(str(resource.uri))
-                await self.pool.update_stats(
-                    uri,
-                    "delete",
-                    response_time=(datetime.now(UTC) -
-                                   start_time).total_seconds(),
-                )
-            else:
-                self._handle_resource_not_found(uri)
-
-        except Exception:
-            await self.pool.update_stats(uri, "delete", error=True)
-            raise
-
-    async def stream_resource(
-        self, uri: str, chunk_size: int = 8192
-    ) -> AsyncGenerator[str | bytes, None]:
-        """Stream content from a resource."""
         if resource := await self.get_resource(uri):
-            async for chunk in resource.read_stream():
-                yield chunk
-        else:
-            self._handle_resource_not_found(uri)
-            return
-            yield b""
-
-    def get_stats(
-        self, uri: str | None = None
-    ) -> ResourceStats | dict[str, ResourceStats]:
-        """Get statistics for one or all resources."""
-        if uri:
-            return self.pool.stats[uri]
-        return dict(self.pool.stats)
-
-    def get_resources_by_type(self, resource_type: ResourceType) -> list[Resource]:
-        """Get all resources of a specific type."""
-        return [
-            self.pool.resources[uri]
-            for uri in self.pool.resource_types.get(resource_type, set())
-        ]
-
-    def register_resource_type(
-        self, resource_type: ResourceType, resource_class: type[Resource]
-    ) -> None:
-        """Register a new resource type."""
-        self._type_registry[resource_type] = resource_class
+            try:
+                return await resource.read()
+            except Exception as e:
+                raise ResourceError(f"Error reading resource {uri}: {e}")
+        raise ResourceError(f"Resource not found: {uri}")

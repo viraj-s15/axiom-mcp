@@ -13,11 +13,13 @@ try:
     sys.path.insert(0, os.getcwd())
     print("Importing echo_server...")
     from examples.echo_server import mcp
+
     print(f"Server object: {mcp}")
     print(f"Server settings: {mcp.settings}")
 
     # Try to start the server directly
     import asyncio
+
     print("Running server...")
     # Force debug mode and log all details
     mcp.settings.debug = True
@@ -36,5 +38,6 @@ try:
     asyncio.run(mcp.run(transport="sse"))
 except Exception as e:
     import traceback
+
     print(f"ERROR: {e}")
     traceback.print_exc()

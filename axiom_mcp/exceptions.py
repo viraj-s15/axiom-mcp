@@ -40,8 +40,7 @@ class AxiomMCPError(Exception):
         message_parts = [self.message]
 
         if self.details:
-            details_str = ", ".join(
-                f"{k}={v}" for k, v in self.details.items())
+            details_str = ", ".join(f"{k}={v}" for k, v in self.details.items())
             message_parts.append(f"Details: {details_str}")
 
         if self.cause:
@@ -208,8 +207,7 @@ class MissingArgumentsError(AxiomMCPError):
     """Raised when required arguments are missing."""
 
     def __init__(self, missing_args: list[str]):
-        super().__init__(
-            f"Missing required arguments: {', '.join(missing_args)}")
+        super().__init__(f"Missing required arguments: {', '.join(missing_args)}")
 
 
 class InvalidMessageRoleError(AxiomMCPError):
@@ -361,8 +359,7 @@ class ToolValidationError(ToolError):
         super().__init__(
             f"{validation_type.title()} validation failed for tool {tool_name}: {'; '.join(errors)}",
             tool_name=tool_name,
-            execution_context={
-                "validation_type": validation_type, "errors": errors},
+            execution_context={"validation_type": validation_type, "errors": errors},
             **kwargs,
         )
 
@@ -421,10 +418,10 @@ class ToolStreamError(ToolError):
 class ToolRecoveryStrategy(BaseModel):
     """Configuration for tool error recovery."""
 
-    max_retries: int = Field(
-        default=3, description="Maximum number of retry attempts")
+    max_retries: int = Field(default=3, description="Maximum number of retry attempts")
     retry_delay: float = Field(
-        default=1.0, description="Delay between retries in seconds")
+        default=1.0, description="Delay between retries in seconds"
+    )
     exponential_backoff: bool = Field(
         default=True, description="Whether to use exponential backoff for retries"
     )
@@ -439,9 +436,11 @@ class ToolRecoveryStrategy(BaseModel):
         },
         description="Set of error types to retry on",
     )
-    recovery_hooks: dict[type[Exception], Callable[[Exception], Awaitable[None]]] = Field(
-        default_factory=dict,
-        description="Custom recovery functions for specific error types",
+    recovery_hooks: dict[type[Exception], Callable[[Exception], Awaitable[None]]] = (
+        Field(
+            default_factory=dict,
+            description="Custom recovery functions for specific error types",
+        )
     )
 
 
@@ -475,14 +474,14 @@ class RetryableError(Exception):
             # Look for a custom recovery hook only if we have a last error
             if self.last_error is not None:
                 recovery_hook = self.recovery_strategy.recovery_hooks.get(
-                    type(self.last_error))
+                    type(self.last_error)
+                )
                 if recovery_hook:
                     await recovery_hook(self.last_error)
 
             # Wait with exponential backoff if enabled
             delay = (
-                self.recovery_strategy.retry_delay
-                * (2 ** (self.retries - 1))
+                self.recovery_strategy.retry_delay * (2 ** (self.retries - 1))
                 if self.recovery_strategy.exponential_backoff
                 else self.recovery_strategy.retry_delay
             )

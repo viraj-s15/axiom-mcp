@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import time
+import os
 from collections import defaultdict
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -15,9 +16,20 @@ from pydantic import BaseModel, Field
 from jsonschema import validate as validate_schema
 
 from ..exceptions import ToolError
-from .base import Tool, ToolContext, ToolDependency
+from .base import Tool, ToolContext
 
 logger = logging.getLogger(__name__)
+
+# Add FileHandler for metrics logging
+metrics_logger = logging.getLogger("axiom_mcp.tools.metrics")
+metrics_logger.setLevel(logging.INFO)
+metrics_file = os.path.join(
+    os.path.expanduser("~"), ".axiom_mcp", "metrics", "tools.log"
+)
+os.makedirs(os.path.dirname(metrics_file), exist_ok=True)
+metrics_handler = logging.FileHandler(metrics_file)
+metrics_handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
+metrics_logger.addHandler(metrics_handler)
 
 
 class ToolCacheEntry(BaseModel):
@@ -97,7 +109,7 @@ class ToolManager:
             return
 
         # Validate tool implementation
-        if not hasattr(tool, 'execute'):
+        if not hasattr(tool, "execute"):
             raise ToolError(f"Tool {tool_name} missing execute method")
 
         # Initialize metrics
@@ -107,10 +119,7 @@ class ToolManager:
         self._tools[tool_name] = tool
 
     async def execute_tool(
-        self,
-        name: str,
-        arguments: dict[str, Any],
-        context: ToolContext | None = None
+        self, name: str, arguments: dict[str, Any], context: ToolContext | None = None
     ) -> Any:
         """Execute a tool with proper error handling and metrics."""
         await self._ensure_initialized()
@@ -128,39 +137,43 @@ class ToolManager:
             return self._cache[cache_key]
 
         metrics = self._metrics.get(name) if self.enable_metrics else None
-        start_time = time.monotonic()  # Using monotonic for better timing
+        start_time = time.monotonic()
 
         try:
-            # Create tool instance
             tool = tool_cls()
-
-            # Validate input if enabled
             if ctx.validation_enabled and tool.metadata.validation:
                 try:
-                    validate_schema(
-                        arguments, tool.metadata.validation.input_schema)
+                    validate_schema(arguments, tool.metadata.validation.input_schema)
                 except Exception as e:
+                    if metrics:
+                        self._log_metrics(name, "validation_error", arguments)
                     raise ToolError(
                         f"Invalid arguments for tool {name}: {str(e)}",
                         tool_name=name,
                     )
 
             # Execute with timeout
-            result = await asyncio.wait_for(
-                tool.execute(arguments),
-                timeout=timeout
-            )
+            result = await asyncio.wait_for(tool.execute(arguments), timeout=timeout)
 
             # Cache result if enabled
             if ctx.cache_enabled:
                 self._cache[cache_key] = result
 
-            # Update metrics
+            # Update and log metrics
             await self._update_metrics(name, start_time, success=True)
+            if metrics:
+                self._log_metrics(
+                    name,
+                    "success",
+                    arguments,
+                    execution_time=time.monotonic() - start_time,
+                )
 
             return result
 
         except asyncio.TimeoutError:
+            if metrics:
+                self._log_metrics(name, "timeout", arguments, timeout=timeout)
             await self._update_metrics(name, start_time, success=False)
             raise ToolError(
                 f"Tool {name} timed out after {timeout} seconds",
@@ -168,18 +181,52 @@ class ToolManager:
                 execution_context={"timeout": timeout},
             )
         except Exception as e:
+            if metrics:
+                self._log_metrics(name, "error", arguments, error=str(e))
             await self._update_metrics(name, start_time, success=False)
-            raise ToolError(
-                f"Tool {name} failed: {str(e)}",
-                tool_name=name,
-                cause=e
-            )
+            raise ToolError(f"Tool {name} failed: {str(e)}", tool_name=name, cause=e)
+
+    def _log_metrics(
+        self, tool_name: str, status: str, arguments: dict, **extra: Any
+    ) -> None:
+        """Log metrics to file for analysis."""
+        if not self.enable_metrics:
+            return
+
+        metrics_data = {
+            "tool": tool_name,
+            "status": status,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "arguments": arguments,
+            **extra,
+        }
+
+        # Log metrics in JSON format
+        metrics_logger.info(json.dumps(metrics_data))
+
+    def get_metrics_summary(self) -> dict[str, dict]:
+        """Get a summary of all tool metrics."""
+        if not self.enable_metrics:
+            raise ToolError("Metrics are disabled")
+
+        summary = {}
+        for tool_name, metrics in self._metrics.items():
+            summary[tool_name] = {
+                "total_calls": metrics.total_calls,
+                "success_rate": (
+                    (metrics.successful_calls / metrics.total_calls * 100)
+                    if metrics.total_calls > 0
+                    else 0
+                ),
+                "average_execution_time": metrics.average_execution_time,
+                "last_used": (
+                    metrics.last_used.isoformat() if metrics.last_used else None
+                ),
+            }
+        return summary
 
     async def _update_metrics(
-        self,
-        tool_name: str,
-        start_time: float,
-        success: bool
+        self, tool_name: str, start_time: float, success: bool
     ) -> None:
         """Update metrics for a tool execution."""
         if not self.enable_metrics:
@@ -195,10 +242,8 @@ class ToolManager:
         metrics.last_used = datetime.now(UTC)
         total_time = time.monotonic() - start_time
         metrics.average_execution_time = (
-            (metrics.average_execution_time *
-             (metrics.total_calls - 1) + total_time)
-            / metrics.total_calls
-        )
+            metrics.average_execution_time * (metrics.total_calls - 1) + total_time
+        ) / metrics.total_calls
 
     def _get_cache_key(self, name: str, arguments: dict[str, Any]) -> str:
         """Generate a cache key for tool execution."""
@@ -226,10 +271,7 @@ class ToolManager:
             if name not in self._tools:
                 raise ToolError(f"Unknown tool: {name}")
             # Remove specific tool entries
-            keys_to_remove = [
-                k for k in self._cache.keys()
-                if k.startswith(f"{name}:")
-            ]
+            keys_to_remove = [k for k in self._cache.keys() if k.startswith(f"{name}:")]
             for k in keys_to_remove:
                 self._cache.pop(k, None)
         else:

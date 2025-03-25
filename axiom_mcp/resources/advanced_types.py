@@ -2,21 +2,24 @@
 
 import asyncio
 import gzip
+import inspect
 import json
 import lzma
+import re
 import zlib
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Any
-
 import aiosqlite
-import jinja2
 from aiosqlite.core import Connection
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, AnyUrl
+from typing import Any, Dict, Optional, Union
 
 from ..exceptions import ResourceError
+from ..utilities.logging import get_logger
 from .base import Resource, ResourceType
+
+logger = get_logger(__name__)
 
 
 class CompressionError(ResourceError):
@@ -373,73 +376,94 @@ class TemplateConfig(BaseModel):
 class TemplateResource(Resource):
     """Resource for template-based content generation."""
 
-    template_string: str = Field(description="Template string or content")
-    config: TemplateConfig = Field(default_factory=TemplateConfig)
-    context: dict[str, Any] = Field(default_factory=dict)
+    uri_template: str = Field(description="Template string with parameters")
+    fn: Callable = Field(exclude=True)  # Function to generate content
+    parameters: dict = Field(
+        default_factory=dict, description="Parameter schema for the template"
+    )
     resource_type: ResourceType = ResourceType.TEMPLATE
 
-    _template_engines: dict[str, Any] = {}
-    _template_cache: dict[str, Any] = {}
+    @classmethod
+    def from_function(
+        cls,
+        fn: Callable,
+        uri_template: str,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        mime_type: Optional[str] = None,
+    ) -> "TemplateResource":
+        """Create a template from a function."""
+        func_name = name or fn.__name__
+        if func_name == "<lambda>":
+            raise ValueError("You must provide a name for lambda functions")
 
-    def __init__(self, **data):
-        super().__init__(**data)
-        self._setup_template_engine()
+        # Get function signature parameters
+        params = {}
+        sig = inspect.signature(fn)
+        for param_name, param in sig.parameters.items():
+            params[param_name] = {
+                "type": "string",  # Default to string for template parameters
+                "description": f"Parameter {param_name} for template",
+                "required": param.default == inspect.Parameter.empty,
+            }
 
-    def _setup_template_engine(self) -> None:
-        """Set up the template engine based on configuration."""
-        if (
-            self.config.template_type == "jinja2"
-            and "jinja2" not in self._template_engines
-        ):
-            self._template_engines["jinja2"] = jinja2.Environment(
-                autoescape=True,
-                auto_reload=self.config.auto_reload,
-                cache_size=self.config.cache_size,
-                undefined=(
-                    jinja2.StrictUndefined
-                    if self.config.strict_variables
-                    else jinja2.Undefined
-                ),
-            )
+        return cls(
+            uri=AnyUrl(uri_template),  # Store template in uri field
+            uri_template=uri_template,
+            name=func_name,
+            description=description or fn.__doc__ or "",
+            mime_type=mime_type or "text/plain",
+            fn=fn,
+            parameters=params,
+        )
 
-    def _get_template(self) -> Any:
-        """Get or create a template instance."""
-        cache_key = f"{self.uri}_{hash(self.template_string)}"
-        if not self.config.auto_reload and cache_key in self._template_cache:
-            return self._template_cache[cache_key]
+    def matches(self, uri: str) -> Optional[Dict[str, str]]:
+        """Check if a URI matches this template pattern."""
+        pattern = self.uri_template.replace("{", "(?P<").replace("}", ">[^/]+)")
+        match = re.match(f"^{pattern}$", uri)
+        return match.groupdict() if match else None
 
-        if self.config.template_type == "jinja2":
-            template = self._template_engines["jinja2"].from_string(
-                self.template_string
-            )
-            if not self.config.auto_reload:
-                self._template_cache[cache_key] = template
-            return template
-
-        raise UnsupportedTemplateTypeError(self.config.template_type)
-
-    async def read(self) -> str:
-        """Render the template with the current context."""
+    async def create_resource(self, uri: str, params: Dict[str, str]) -> Resource:
+        """Create a concrete resource from this template."""
         try:
-            template = self._get_template()
-            # Support async context values
-            context = {}
-            for key, value in self.context.items():
-                context[key] = await value if asyncio.iscoroutine(value) else value
+            # Call the function with extracted parameters
+            result = self.fn(**params)
+            if inspect.iscoroutine(result):
+                result = await result
 
-            return template.render(**context)
+            # Create a FunctionResource that wraps the result
+            from .types import FunctionResource
+
+            return FunctionResource(
+                uri=AnyUrl(uri),  # Convert string to AnyUrl
+                name=self.name,
+                description=self.description,
+                mime_type=self.mime_type,
+                fn=lambda: result,
+            )
+
         except Exception as e:
-            raise TemplateRenderError(e) from e
+            logger.error(f"Error creating resource from template: {e}")
+            raise ValueError(f"Error creating resource from template: {e}")
 
-    async def write(self, content: str | bytes) -> None:
-        """Update the template string."""
-        if isinstance(content, bytes):
-            content = content.decode(self.metadata.encoding or "utf-8")
-        # Use object.__setattr__ to bypass Pydantic's immutability
-        object.__setattr__(self, "template_string", str(content))
-        # Clear template cache for this resource
-        cache_key = f"{self.uri}_{hash(self.template_string)}"
-        self._template_cache.pop(cache_key, None)
+    # Update return type to match base class
+    async def read(self) -> Union[str, bytes]:
+        """Read content with template parameters."""
+        try:
+            # Extract parameters from the URI
+            params = self.matches(str(self.uri))
+            if not params:
+                raise ValueError(
+                    f"URI {self.uri} does not match template {self.uri_template}"
+                )
+
+            # Create concrete resource and read it
+            resource = await self.create_resource(str(self.uri), params)
+            return await resource.read()  # Now correct since we match the return type
+
+        except Exception as e:
+            logger.error(f"Template rendering error: {e}")
+            raise ValueError(f"Template rendering error: {e}")
 
 
 class CachedResource(Resource):

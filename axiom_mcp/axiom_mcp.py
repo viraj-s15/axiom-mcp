@@ -1,8 +1,6 @@
 """FastMCP - A more ergonomic interface for MCP servers."""
 
-from axiom_mcp.prompts.base import Prompt, Message
-from axiom_mcp.resources.base import Resource, ResourceType
-from axiom_mcp.tools.base import Tool, ToolContext, ToolMetadata
+from axiom_mcp.resources.advanced_types import TemplateResource
 from mcp.types import (
     EmbeddedResource,
     GetPromptResult,
@@ -21,7 +19,19 @@ from mcp.server import Server as MCPServer
 import uvicorn
 from pydantic import BaseModel, Field
 import pydantic_core
-from typing import Any, Callable, Dict, Literal, Sequence, TypeVar, ParamSpec, TYPE_CHECKING, Protocol, cast, Awaitable
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Literal,
+    Sequence,
+    TypeVar,
+    ParamSpec,
+    TYPE_CHECKING,
+    Protocol,
+    cast,
+    Awaitable,
+)
 from itertools import chain
 import re
 import json
@@ -33,14 +43,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from axiom_mcp.exceptions import ResourceError
 from axiom_mcp.prompts import Prompt, PromptManager, PromptResponse
 from axiom_mcp.resources import FunctionResource, Resource, ResourceManager
+from axiom_mcp.resources.base import ResourceType
 from axiom_mcp.tools import ToolManager
+from axiom_mcp.tools.base import Tool, ToolContext, ToolMetadata
 from axiom_mcp.utilities.logging import configure_logging, get_logger
 from axiom_mcp.utilities.types import Image
-from typing_extensions import TypeAlias
 from starlette.middleware.cors import CORSMiddleware  # Add CORS middleware import
 
 # Define Unknown type correctly
-T = TypeVar('T')
+T = TypeVar("T")
 Unknown = T
 
 
@@ -71,8 +82,7 @@ class Settings(BaseSettings):
 
     # Server settings
     debug: bool = False
-    log_level: Literal["DEBUG", "INFO",
-                       "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     host: str = "0.0.0.0"
     port: int = 8000
 
@@ -114,16 +124,14 @@ class AxiomMCP:
         init_name = name or "AxiomMCP"
 
         # Skip initialization if this instance is already initialized
-        if hasattr(self, '_initialized') and self._initialized:
+        if hasattr(self, "_initialized") and self._initialized:
             return
 
         self.settings = Settings(**settings)
         # Create server with name first before trying to access it
         self._mcp_server = MCPServer(name=init_name)
         self._tool_manager = ToolManager(
-            cache_size=1000,
-            default_timeout=30.0,
-            enable_metrics=True
+            cache_size=1000, default_timeout=30.0, enable_metrics=True
         )
         self._resource_manager = ResourceManager(
             warn_on_duplicate_resources=self.settings.warn_on_duplicate_resources
@@ -155,8 +163,7 @@ class AxiomMCP:
 
         def handle_shutdown(signum: int, frame: Any) -> None:
             """Handle shutdown signals."""
-            logger.info(
-                "Received shutdown signal, initiating graceful shutdown...")
+            logger.info("Received shutdown signal, initiating graceful shutdown...")
             asyncio.create_task(self.shutdown())
 
         # Register handlers for common shutdown signals
@@ -169,14 +176,7 @@ class AxiomMCP:
 
         try:
             # Clean up managers in parallel
-            async def async_clear_cache():
-                self._tool_manager.clear_cache()
-
-            await asyncio.gather(
-                self._resource_manager.pool.shutdown(),
-                async_clear_cache(),
-                return_exceptions=True
-            )
+            self._tool_manager.clear_cache()
 
             # Wait for any pending operations to complete
             await asyncio.sleep(0.5)  # Short grace period
@@ -189,6 +189,7 @@ class AxiomMCP:
         finally:
             # Force exit if something is hanging
             import sys
+
             sys.exit(0)
 
     @property
@@ -261,18 +262,23 @@ class AxiomMCP:
 
             # Check if URI contains parameters
             uri_has_params = "{" in uri and "}" in uri
-            func_params = list(inspect.signature(fn).parameters.keys())
+            func_params = inspect.signature(fn).parameters
 
-            if uri_has_params or func_params:
-                logger.debug(
-                    "Registering template resource with parameters: %s "
-                    f"and function parameters {func_params}",
-                    uri,
-                )
+            if uri_has_params:
+                # Validate that URI params match function params
+                uri_params = set(re.findall(r"{(\w+)}", uri))
+                param_names = set(func_params.keys())
 
-                # Register as template - store for later registration
+                if uri_params != param_names:
+                    raise ValueError(
+                        f"Mismatch between URI parameters {uri_params} "
+                        f"and function parameters {param_names}"
+                    )
+
+                # Register as template - add to pending resources for async registration
                 self._pending_resources.append(
-                    (wrapper, uri, name, description, mime_type))
+                    (wrapper, uri, name, description, mime_type)
+                )
             else:
                 # Register as regular resource - create a FunctionResource instance
                 resource = FunctionResource(
@@ -281,10 +287,10 @@ class AxiomMCP:
                     description=description,
                     mime_type=mime_type or "text/plain",
                     resource_type=ResourceType.FUNCTION,
-                    fn=wrapper
+                    fn=wrapper,
                 )
-                # Set the function after initialization
-                self.add_resource(resource)
+                # Add to pending resources for async registration
+                self._pending_resources.append(resource)
 
             # Return the original function
             return orig_fn
@@ -334,7 +340,9 @@ class AxiomMCP:
                 "Did you forget to call it? Use @prompt() instead of @prompt"
             )
 
-        def decorator(func: Callable[P, R_PromptResponse]) -> Callable[P, R_PromptResponse]:
+        def decorator(
+            func: Callable[P, R_PromptResponse],
+        ) -> Callable[P, R_PromptResponse]:
             # Wrap the function to handle async/sync compatibility
             @functools.wraps(func)
             async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R_PromptResponse:
@@ -342,8 +350,7 @@ class AxiomMCP:
                     return await func(*args, **kwargs)
                 return func(*args, **kwargs)
 
-            prompt = Prompt.from_function(
-                wrapper, name=name, description=description)
+            prompt = Prompt.from_function(wrapper, name=name, description=description)
             self.add_prompt(prompt)
             return func
 
@@ -357,13 +364,11 @@ class AxiomMCP:
         )
         self._mcp_server.call_tool()(self.call_tool)
         self._mcp_server.list_resources()(
-            cast(Callable[[], Awaitable[list[MCPResource]]],
-                 self.list_resources)
+            cast(Callable[[], Awaitable[list[MCPResource]]], self.list_resources)
         )
         self._mcp_server.read_resource()(self.read_resource)
         self._mcp_server.list_prompts()(
-            cast(Callable[[], Awaitable[list[MCPPrompt]]],
-                 self.list_prompts)
+            cast(Callable[[], Awaitable[list[MCPPrompt]]], self.list_prompts)
         )
         self._mcp_server.get_prompt()(self.get_prompt)
 
@@ -380,7 +385,7 @@ class AxiomMCP:
                     author=None,  # Optional parameter
                     tags=[],  # Empty list by default
                     dependencies=[],  # Empty list by default
-                    validation=None  # Optional parameter
+                    validation=None,  # Optional parameter
                 )
 
                 async def execute(self, args: dict[str, Any]) -> Any:
@@ -392,16 +397,38 @@ class AxiomMCP:
 
     async def _process_pending_resources(self) -> None:
         """Process and register pending resources."""
-        for wrapper, uri, name, description, mime_type in self._pending_resources:
-            resource = FunctionResource(
-                uri=AnyUrl(uri),
-                name=name,
-                description=description,
-                mime_type=mime_type or "text/plain",
-                resource_type=ResourceType.FUNCTION,
-                fn=wrapper
-            )
-            await self._resource_manager.add_resource(resource)
+        for item in self._pending_resources:
+            if isinstance(item, Resource):
+                await self._resource_manager.add_resource(item)
+            else:
+                # Unpack the tuple for template resources
+                wrapper, uri, name, description, mime_type = item
+
+                # Check if this is a template resource
+                if "{" in uri and "}" in uri:
+                    # Create template resource
+                    template = TemplateResource.from_function(
+                        fn=wrapper,
+                        uri_template=uri,
+                        name=name,
+                        description=description,
+                        mime_type=mime_type or "text/plain",
+                    )
+                    await self._resource_manager.add_resource(template)
+                else:
+                    # Regular function resource
+                    resource = FunctionResource(
+                        uri=AnyUrl(uri),
+                        name=name,
+                        description=description,
+                        mime_type=mime_type or "text/plain",
+                        resource_type=ResourceType.FUNCTION,
+                        fn=wrapper,
+                    )
+                    await self._resource_manager.add_resource(resource)
+
+        # Clear the pending resources after processing
+        self._pending_resources.clear()
 
     def _process_pending_prompts(self) -> None:
         """Process and register pending prompts."""
@@ -441,10 +468,7 @@ class AxiomMCP:
         """Run the server using SSE transport."""
         from starlette.applications import Starlette
         from starlette.routing import Route, Mount
-        from starlette.middleware.cors import CORSMiddleware
-        import uvicorn
-        from mcp.server.sse import SseServerTransport
-        
+
         sse = SseServerTransport("/messages/")
 
         async def handle_sse(request):
@@ -494,9 +518,11 @@ class AxiomMCP:
             tool = MCPTool(
                 name=tool_cls.metadata.name,
                 description=tool_cls.metadata.description,
-                inputSchema=tool_cls.metadata.validation.input_schema
-                if tool_cls.metadata.validation
-                else {},
+                inputSchema=(
+                    tool_cls.metadata.validation.input_schema
+                    if tool_cls.metadata.validation
+                    else {}
+                ),
             )
             tools.append(tool)  # Actually append the tool to the list
 
@@ -521,13 +547,12 @@ class AxiomMCP:
         self, name: str, arguments: dict
     ) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
         """Call a tool by name with arguments."""
-        context = self.get_context()
         tool_context = ToolContext(
-            dry_run=False,
-            cache_enabled=True,
-            validation_enabled=True
+            dry_run=False, cache_enabled=True, validation_enabled=True
         )
-        result = await self._tool_manager.execute_tool(name, arguments, context=tool_context)
+        result = await self._tool_manager.execute_tool(
+            name, arguments, context=tool_context
+        )
 
         # If result is already in the correct MCP content type format, return as sequence
         if isinstance(result, (TextContent, ImageContent, EmbeddedResource)):
@@ -584,7 +609,9 @@ class AxiomMCP:
 
     async def read_resource(self, uri: AnyUrl | str) -> str | bytes:
         """Read a resource by URI."""
-        resource = await self._resource_manager.get_resource(str(uri))  # Convert AnyUrl to str
+        resource = await self._resource_manager.get_resource(
+            str(uri)
+        )  # Convert AnyUrl to str
         if not resource:
             raise ResourceError(f"Unknown resource: {uri}")
 
@@ -604,14 +631,18 @@ class AxiomMCP:
             mcp_prompt = MCPPrompt(
                 name=prompt.name,
                 description=prompt.description,
-                arguments=[
-                    MCPPromptArgument(
-                        name=arg.name,
-                        description=arg.description,
-                        required=arg.required,
-                    )
-                    for arg in prompt.arguments
-                ] if prompt.arguments else None,
+                arguments=(
+                    [
+                        MCPPromptArgument(
+                            name=arg.name,
+                            description=arg.description,
+                            required=arg.required,
+                        )
+                        for arg in prompt.arguments
+                    ]
+                    if prompt.arguments
+                    else None
+                ),
             )
             prompts.append(mcp_prompt)
         return prompts

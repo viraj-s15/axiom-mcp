@@ -1,4 +1,5 @@
 """Entry point for running axiom_mcp as a module."""
+
 from .cli import main
 import sys
 
