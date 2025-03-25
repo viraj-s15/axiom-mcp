@@ -122,21 +122,6 @@ class DivideTool(Tool):
         }
 
 
-class MathPromptResponse(PromptResponse):
-    """Response wrapper for math prompts."""
-
-    def __init__(self, operation: str, a: float, b: float):
-        self.operation = operation
-        self.a = a
-        self.b = b
-        self.__name__ = "MathPromptResponse"
-
-    def __call__(self) -> UserMessage:
-        return UserMessage(
-            content=f"Please calculate {self.a} {self.operation} {self.b}", role="user"
-        )
-
-
 mcp._tool_manager.register_tool(AddTool)
 mcp._tool_manager.register_tool(SubtractTool)
 mcp._tool_manager.register_tool(MultiplyTool)
@@ -152,13 +137,6 @@ def say_hello(name: str) -> str:
 def list_some_random_files() -> list[str]:
     desktop = Path.home() / "Documents"
     return [str(f) for f in desktop.iterdir()]
-
-
-@mcp.prompt()
-def math_prompt(operation: str, a: float, b: float) -> PromptResponse:
-    """Create a math operation prompt"""
-    logger.info(f"Math prompt called with: {operation}({a}, {b})")
-    return MathPromptResponse(operation, a, b)
 
 
 class ConcretePromptResponse(PromptResponse):
