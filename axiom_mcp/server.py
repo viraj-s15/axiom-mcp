@@ -68,7 +68,7 @@ class ServerSession(Protocol):
 
 
 if TYPE_CHECKING:
-    from axiom_mcp.axiom_mcp import AxiomMCP
+    from axiom_mcp.server import AxiomMCP
 
 logger = get_logger(__name__)
 
@@ -366,6 +366,12 @@ class AxiomMCP:
         self._mcp_server.list_resources()(
             cast(Callable[[], Awaitable[list[MCPResource]]], self.list_resources)
         )
+        self._mcp_server.list_resource_templates()(
+            cast(
+                Callable[[], Awaitable[list[MCPResourceTemplate]]],
+                self.list_resource_templates,
+            )
+        )
         self._mcp_server.read_resource()(self.read_resource)
         self._mcp_server.list_prompts()(
             cast(Callable[[], Awaitable[list[MCPPrompt]]], self.list_prompts)
@@ -572,7 +578,6 @@ class AxiomMCP:
             elif result["type"] == "resource":
                 return [EmbeddedResource(**result)]
 
-        # For any other type of result, convert using the utility function
         return _convert_to_content(result)
 
     async def list_resources(self) -> list[MCPResource]:
@@ -583,8 +588,8 @@ class AxiomMCP:
         resources = []
         for resource in self._resource_manager.list_resources():
             mcp_resource = MCPResource(
-                uri=AnyUrl(str(resource.uri)),  # Convert to AnyUrl explicitly
-                name=resource.name or "",  # Ensure name is never None
+                uri=AnyUrl(str(resource.uri)),
+                name=resource.name or "",
                 description=resource.description,
                 mimeType=resource.mime_type,
             )
