@@ -60,7 +60,7 @@ class SubtractTool(Tool):
         description="Subtract b from a",
         validation=ToolValidation(input_schema=number_input_schema),
         author="MathServer",
-        version="1.0.0",  # Added version for compatibility
+        version="1.0.0",
     )
 
     async def execute(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -81,7 +81,7 @@ class MultiplyTool(Tool):
         description="Multiply two numbers",
         validation=ToolValidation(input_schema=number_input_schema),
         author="MathServer",
-        version="1.0.0",  # Added version
+        version="1.0.0",
     )
 
     async def execute(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -89,7 +89,7 @@ class MultiplyTool(Tool):
         logger.info(f"Multiplying {a} * {b}")
         result = a * b
         return {
-            "type": "text",  # Added for client compatibility
+            "type": "text",
             "content": {
                 "operation": "multiplication",
                 "a": a,
@@ -107,7 +107,7 @@ class DivideTool(Tool):
         description="Divide a by b",
         validation=ToolValidation(input_schema=number_input_schema),
         author="MathServer",
-        version="1.0.0",  # Added version
+        version="1.0.0",
     )
 
     async def execute(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -117,7 +117,7 @@ class DivideTool(Tool):
         logger.info(f"Dividing {a} / {b}")
         result = a / b
         return {
-            "type": "text",  # Added for client compatibility
+            "type": "text",
             "content": {"operation": "division", "a": a, "b": b, "result": result},
         }
 
@@ -137,7 +137,6 @@ class MathPromptResponse(PromptResponse):
         )
 
 
-# Register tools with the server
 mcp._tool_manager.register_tool(AddTool)
 mcp._tool_manager.register_tool(SubtractTool)
 mcp._tool_manager.register_tool(MultiplyTool)
@@ -162,20 +161,47 @@ def math_prompt(operation: str, a: float, b: float) -> PromptResponse:
     return MathPromptResponse(operation, a, b)
 
 
-if __name__ == "__main__":
-    import asyncio
-    import sys
-    from typing import Literal
+class ConcretePromptResponse(PromptResponse):
+    def __init__(self, messages: list[Message]):
+        self.messages = messages
+        self.__name__ = "ConcretePromptResponse"
 
-    # Default to SSE transport if not specified, explicitly cast to Literal type
-    transport_arg = sys.argv[1] if len(sys.argv) > 1 else "sse"
-    transport: Literal["stdio", "sse"] = "sse" if transport_arg == "sse" else "stdio"
+    def __call__(self) -> Message:
+        return (
+            self.messages[0] if self.messages else UserMessage(content="", role="user")
+        )
 
-    try:
-        # Support both SSE and stdio transport
-        asyncio.run(mcp.run(transport=transport))
-    except KeyboardInterrupt:
-        logger.info("Server stopped by user")
-    except Exception as e:
-        logger.error(f"Server error: {e}")
-        raise
+    def __iter__(self):
+        yield from self.messages
+
+
+@mcp.prompt()
+def followMathPrompt(operation: str, a: float, b: float) -> PromptResponse:
+    """Follow up on the math prompt"""
+    logger.info(f"Follow-up math prompt called with: {operation}({a}, {b})")
+    return ConcretePromptResponse(
+        messages=[
+            UserMessage(content=f"Please calculate {a} {operation} {b}", role="user")
+        ]
+    )
+
+
+# ------------------- Only for testing purposes -------------------
+# if __name__ == "__main__":
+#     import asyncio
+#     import sys
+#     from typing import Literal
+
+#     # Default to SSE transport if not specified, explicitly cast to Literal type
+#     transport_arg = sys.argv[1] if len(sys.argv) > 1 else "sse"
+#     transport: Literal["stdio",
+#                        "sse"] = "sse" if transport_arg == "sse" else "stdio"
+
+#     try:
+#         # Support both SSE and stdio transport
+#         asyncio.run(mcp.run(transport=transport))
+#     except KeyboardInterrupt:
+#         logger.info("Server stopped by user")
+#     except Exception as e:
+#         logger.error(f"Server error: {e}")
+#         raise
