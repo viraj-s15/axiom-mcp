@@ -70,17 +70,17 @@ def dev(
         if str(Path.cwd()) not in sys.path:
             sys.path.insert(0, str(Path.cwd()))
 
-        # Import module directly like test1.py
         print(f"Importing server from {file_spec}...")
-
         # Parse file path to get module path
         file_path = Path(file_spec).resolve()
-        module_path = (
-            str(file_path)
-            .replace(str(Path.cwd()) + os.sep, "")
-            .replace("/", ".")
-            .replace(".py", "")
-        )
+
+        # Construct module path based on the new src structure
+        rel_path = file_path.relative_to(Path.cwd())
+        if str(rel_path).startswith("src/"):
+            # Remove 'src/' prefix for import
+            module_path = str(rel_path)[4:].replace("/", ".").replace(".py", "")
+        else:
+            module_path = str(rel_path).replace("/", ".").replace(".py", "")
 
         # Import the module and get server object
         module = __import__(module_path, fromlist=["*"])
@@ -144,9 +144,13 @@ def main():
             if os.getcwd() not in sys.path:
                 sys.path.insert(0, os.getcwd())
 
-            # Import the module directly (like test1.py)
             print(f"Importing server from {file_path}...")
-            module_path = file_path.replace("/", ".").replace(".py", "")
+
+            # Handle the src folder structure
+            if file_path.startswith("src/"):
+                module_path = file_path[4:].replace("/", ".").replace(".py", "")
+            else:
+                module_path = file_path.replace("/", ".").replace(".py", "")
 
             try:
                 module = __import__(module_path, fromlist=["*"])
