@@ -81,7 +81,7 @@ all = [
 axiom-mcp = "axiom_mcp.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["axiom_mcp"]
+packages = ["src/axiom_mcp"]
 
 [tool.black]
 line-length = 88
