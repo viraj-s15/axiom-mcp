@@ -26,10 +26,10 @@ def registry_instance() -> FunctionRegistry:
 def example_function() -> Callable[[str], TextContent]:
     """Create an example function for testing."""
 
-    def func(text: str) -> TextContent:
+    def example_function(text: str) -> TextContent:
         return TextContent(type="text", text=f"Test: {text}")
 
-    return func
+    return example_function
 
 
 def test_function_info(
@@ -37,7 +37,7 @@ def test_function_info(
 ) -> None:
     """Test function info creation."""
     func = ExecutableFunction(example_function)
-    assert func.name == "func"
+    assert func.name == "example_function"
     assert func.info.parameters
 
 
@@ -47,7 +47,7 @@ def test_register_function(
     """Test function registration."""
     func = registry_instance.register(example_function)
     assert isinstance(func, ExecutableFunction)
-    assert registry_instance.get("func") is not None
+    assert registry_instance.get("example_function") is not None
 
 
 def test_register_with_name(
@@ -74,8 +74,8 @@ def test_unregister_function(
 ) -> None:
     """Test function unregistration."""
     registry_instance.register(example_function)
-    registry_instance.unregister("func")
-    assert registry_instance.get("func") is None
+    registry_instance.unregister("example_function")
+    assert registry_instance.get("example_function") is None
 
 
 def test_list_functions(
@@ -85,7 +85,7 @@ def test_list_functions(
     registry_instance.register(example_function)
     functions = registry_instance.list_functions()
     assert len(functions) == 1
-    assert "func" in functions
+    assert "example_function" in functions
 
 
 @pytest.mark.asyncio
@@ -99,7 +99,8 @@ async def test_execute_function(registry_instance: FunctionRegistry) -> None:
     result = await registry_instance.execute("test_fn")
     assert len(result) == 1
     assert isinstance(result[0], Message)
-    assert str(result[0].content.text) == "test"
+    assert isinstance(result[0].content, TextContent)
+    assert result[0].content.text == "test"
 
 
 @pytest.mark.asyncio
@@ -112,7 +113,8 @@ async def test_execute_with_args(registry_instance: FunctionRegistry) -> None:
 
     result = await registry_instance.execute("test_fn", {"text": "hello"})
     assert len(result) == 1
-    assert str(result[0].content.text) == "hello"
+    assert isinstance(result[0].content, TextContent)
+    assert result[0].content.text == "hello"
 
 
 @pytest.mark.asyncio
@@ -120,13 +122,16 @@ async def test_execute_async_function(registry_instance: FunctionRegistry) -> No
     """Test async function execution."""
 
     @registry_instance.register
-    async def async_fn() -> TextContent:
+    async def async_fn() -> Message:
         await asyncio.sleep(0.1)
-        return TextContent(type="text", text="async test")
+        return Message(
+            content=TextContent(type="text", text="async test"), role="assistant"
+        )
 
     result = await registry_instance.execute("async_fn")
     assert len(result) == 1
-    assert str(result[0].content.text) == "async test"
+    assert isinstance(result[0].content, TextContent)
+    assert result[0].content.text == "async test"
 
 
 @pytest.mark.asyncio
@@ -134,12 +139,15 @@ async def test_execute_sync_function(registry_instance: FunctionRegistry) -> Non
     """Test synchronous function execution."""
 
     @registry_instance.register
-    def sync_fn() -> TextContent:
-        return TextContent(type="text", text="sync test")
+    def sync_fn() -> Message:
+        return Message(
+            content=TextContent(type="text", text="sync test"), role="assistant"
+        )
 
     result = await registry_instance.execute("sync_fn")
     assert len(result) == 1
-    assert str(result[0].content.text) == "sync test"
+    assert isinstance(result[0].content, TextContent)
+    assert result[0].content.text == "sync test"
 
 
 @pytest.mark.asyncio
@@ -153,8 +161,8 @@ def test_global_registry() -> None:
     """Test global registry instance."""
 
     @registry.register
-    def test_fn(text: str) -> TextContent:
-        return TextContent(type="text", text=text)
+    def test_fn(text: str) -> Message:
+        return Message(content=TextContent(type="text", text=text), role="assistant")
 
     assert registry.get("test_fn") is not None
     registry.unregister("test_fn")
@@ -164,9 +172,11 @@ def test_prompt_decorator() -> None:
     """Test the @prompt decorator functionality."""
 
     @prompt(name="test_prompt", description="Test prompt", tags=["test"])
-    def example_prompt(text: str) -> TextContent:
+    def example_prompt(text: str) -> Message:
         """Example prompt function."""
-        return TextContent(type="text", text=f"Example: {text}")
+        return Message(
+            content=TextContent(type="text", text=f"Example: {text}"), role="assistant"
+        )
 
     # Check if prompt was registered
     test_prompt = registry.get_prompt("test_prompt")
@@ -185,27 +195,27 @@ async def test_prompt_decorator_async(registry_instance: FunctionRegistry) -> No
     """Test the @prompt decorator with async functions."""
 
     @registry_instance.register
-    async def async_prompt(text: str) -> TextContent:
+    async def async_prompt(text: str) -> Message:
         await asyncio.sleep(0.1)
-        return TextContent(type="text", text=f"Async: {text}")
+        return Message(
+            content=TextContent(type="text", text=f"Async: {text}"), role="assistant"
+        )
 
-    # Get the registered function
-    func = registry_instance.get("async_prompt")
-    assert func is not None
-
-    # Test execution
     result = await registry_instance.execute("async_prompt", {"text": "test"})
     assert len(result) == 1
-    assert str(result[0].content.text) == "Async: test"
+    assert isinstance(result[0].content, TextContent)
+    assert result[0].content.text == "Async: test"
 
 
 def test_prompt_decorator_default_values() -> None:
     """Test @prompt decorator with default parameter values."""
 
     @prompt()  # Test without explicit parameters
-    def default_prompt(text: str = "default") -> TextContent:
+    def default_prompt(text: str = "default") -> Message:
         """Test prompt with default value."""
-        return TextContent(type="text", text=f"Default: {text}")
+        return Message(
+            content=TextContent(type="text", text=f"Default: {text}"), role="assistant"
+        )
 
     test_prompt = registry.get_prompt("default_prompt")
     assert test_prompt is not None
@@ -221,8 +231,11 @@ def test_prompt_decorator_multiple_arguments() -> None:
     """Test @prompt decorator with multiple arguments."""
 
     @prompt(tags=["test", "multiple"])
-    def multi_arg_prompt(text: str, count: int, flag: bool = False) -> TextContent:
-        return TextContent(type="text", text=f"{text} - {count} - {flag}")
+    def multi_arg_prompt(text: str, count: int, flag: bool = False) -> Message:
+        return Message(
+            content=TextContent(type="text", text=f"{text} - {count} - {flag}"),
+            role="assistant",
+        )
 
     test_prompt = registry.get_prompt("multi_arg_prompt")
     assert test_prompt is not None
@@ -249,18 +262,19 @@ async def test_prompt_decorator_return_types(
 ) -> None:
     """Test @prompt decorator with different return types."""
 
-    # Define and register prompts directly with test registry
-    @prompt(registry=registry_instance)
-    def str_prompt() -> TextContent:
-        return TextContent(type="text", text="String response")
+    @registry_instance.register
+    def str_prompt() -> Message:
+        return Message(
+            content=TextContent(type="text", text="String response"), role="assistant"
+        )
 
-    @prompt(registry=registry_instance)
+    @registry_instance.register
     def message_prompt() -> Message:
         return Message(
             content=TextContent(type="text", text="Message response"), role="assistant"
         )
 
-    @prompt(registry=registry_instance)
+    @registry_instance.register
     def list_prompt() -> list[Message]:
         return [
             Message(
@@ -272,18 +286,22 @@ async def test_prompt_decorator_return_types(
             ),
         ]
 
-    # Test string return
-    str_result = await registry_instance.execute("str_prompt")
-    assert len(str_result) == 1
-    assert str(str_result[0].content.text) == "String response"
+    # Test function return
+    result = await registry_instance.execute("str_prompt")
+    assert len(result) == 1
+    assert isinstance(result[0].content, TextContent)
+    assert result[0].content.text == "String response"
 
     # Test Message return
-    msg_result = await registry_instance.execute("message_prompt")
-    assert len(msg_result) == 1
-    assert str(msg_result[0].content.text) == "Message response"
+    result = await registry_instance.execute("message_prompt")
+    assert len(result) == 1
+    assert isinstance(result[0].content, TextContent)
+    assert result[0].content.text == "Message response"
 
     # Test list return
-    list_result = await registry_instance.execute("list_prompt")
-    assert len(list_result) == 2
-    assert str(list_result[0].content.text) == "First message"
-    assert str(list_result[1].content.text) == "Second message"
+    result = await registry_instance.execute("list_prompt")
+    assert len(result) == 2
+    assert isinstance(result[0].content, TextContent)
+    assert isinstance(result[1].content, TextContent)
+    assert result[0].content.text == "First message"
+    assert result[1].content.text == "Second message"

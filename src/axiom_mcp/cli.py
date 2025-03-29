@@ -78,8 +78,7 @@ class CodeReloader(FileSystemEventHandler):
             server.settings.log_level = "debug"
             server.settings.port = 8888
 
-            # Run server
-            console.print("[green]Server started successfully![/]")
+            # Run server (no success message here, it will be shown in parent process)
             asyncio.run(server.run(transport="sse"))
 
         except Exception as e:
@@ -104,6 +103,9 @@ class CodeReloader(FileSystemEventHandler):
         )
         self.process.start()
 
+        # Show success message in parent process after process starts
+        console.print("[green]Server started successfully![/]")
+
     def watch_and_reload(self):
         while True:
             try:
@@ -117,7 +119,12 @@ class CodeReloader(FileSystemEventHandler):
                 break
 
 
-def run_production_server(file_path: Path):
+def run_production_server(
+    file_path: Path,
+    rate_limit: bool = False,
+    request_validation: bool = False,
+    security_headers: bool = False,
+):
     try:
         # Add file's directory to Python path
         file_dir = str(file_path.parent)
@@ -150,19 +157,54 @@ def run_production_server(file_path: Path):
         server.settings.log_level = "INFO"
         server.settings.production_mode = True
         server.settings.optimize_memory = True
-        server.settings.max_cached_items = 500  # Reduce cache size in production
-        server.settings.gc_interval = 300  # 5 minutes GC interval
+        server.settings.max_cached_items = 500
+        server.settings.gc_interval = 300
         server.settings.port = 8888
+
+        # Enhanced security settings
+        server.settings.hide_error_details = True  # Hide detailed error messages
+
+        enabled_features = ["✓ Detailed error messages hidden"]
+
+        # Optional security features
+        if rate_limit:
+            server.settings.enable_rate_limit = True
+            server.settings.rate_limit = {
+                "requests": 100,
+                "period": 60,  # requests per minute
+            }
+            enabled_features.append("✓ Rate limiting enabled")
+
+        if request_validation:
+            server.settings.validate_requests = True
+            server.settings.max_request_size = 1024 * 1024  # 1MB
+            enabled_features.append("✓ Request validation enabled")
+
+        if security_headers:
+            server.settings.security_headers = {
+                "X-Content-Type-Options": "nosniff",
+                "X-Frame-Options": "DENY",
+                "X-XSS-Protection": "1; mode=block",
+                "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+                "Content-Security-Policy": "default-src 'self'",
+                "Referrer-Policy": "strict-origin-when-cross-origin",
+            }
+            enabled_features.append("✓ Security headers configured")
 
         # Run server
         console.print("[green]Production server started successfully![/]")
-        console.print(
-            "[yellow]Running with optimized memory settings and reduced logging[/]"
-        )
+        if enabled_features:
+            console.print("[yellow]Running with the following security settings:[/]")
+            for feature in enabled_features:
+                console.print(feature)
+
         asyncio.run(server.run(transport="sse"))
 
-    except Exception as e:
-        console.print(f"[red]Error running server: {e}[/]")
+    except Exception:
+        # In production, don't show detailed error information
+        console.print(
+            "[red]Server failed to start. Please check the logs for details.[/]"
+        )
         return
 
 
@@ -234,10 +276,10 @@ def dev(
             console.print(f"[red]File not found: {file_spec}[/]")
             raise typer.Exit(code=1)
 
+        reloader = CodeReloader(file_path)
         if not no_reload:
             # Set up watchdog observer
             observer = Observer()
-            reloader = CodeReloader(file_path)
             observer.schedule(reloader, str(file_path.parent), recursive=False)
             observer.start()
 
@@ -251,9 +293,16 @@ def dev(
                 observer.join()
                 console.print("\n[yellow]Shutting down server...[/]")
         else:
-            # Run without hot reloading
-            reloader = CodeReloader(file_path)
-            reloader.run_server_process(file_path)
+            # Run without hot reloading, but still use multiprocessing
+            reloader.start_server()
+            try:
+                while reloader.process and reloader.process.is_alive():
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                if reloader.process and reloader.process.is_alive():
+                    reloader.process.terminate()
+                    reloader.process.join()
+                console.print("\n[yellow]Shutting down server...[/]")
 
     except typer.Exit:
         raise
@@ -267,11 +316,29 @@ def run(
     file_spec: Annotated[
         str, typer.Argument(help="Python file to run in production mode")
     ],
+    rate_limit: Annotated[
+        bool,
+        typer.Option("--rate-limit", help="Enable rate limiting (100 requests/minute)"),
+    ] = False,
+    request_validation: Annotated[
+        bool,
+        typer.Option(
+            "--validate-requests", help="Enable request validation with 1MB size limit"
+        ),
+    ] = False,
+    security_headers: Annotated[
+        bool,
+        typer.Option(
+            "--security-headers", help="Enable security headers (HSTS, CSP, etc)"
+        ),
+    ] = False,
 ):
     """Run an Axiom MCP server in production mode."""
     try:
         file_path = Path(file_spec).resolve(strict=True)
-        run_production_server(file_path)
+        run_production_server(
+            file_path, rate_limit, request_validation, security_headers
+        )
     except (FileNotFoundError, RuntimeError):
         console.print(f"[red]File not found: {file_spec}[/]")
         raise typer.Exit(code=1)
