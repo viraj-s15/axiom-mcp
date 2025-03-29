@@ -4,11 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "axiom-mcp"
-version = "0.1.0"
+version = "0.1.1"
 authors = [
   { name = "Viraj Shah", email = "viraj.shah1503@gmail.com" },
 ]
-description = "Model Context Protocol (MCP) implementation for connecting AI systems with external data sources"
+description = "🚀 MCP framework that unlocks truly scalable AI systems with zero friction"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 keywords = ["ai", "mcp", "model-context-protocol", "llm", "machine-learning", "axiom"]
