@@ -164,72 +164,68 @@ class ToolManager:
                     raise ToolError(
                         "Invalid tool input: " + str(e),
                         tool_name=name,
-                    )
+                    ) from e  # Add from clause to preserve stack trace
 
             # Execute with timeout
             try:
                 result = await asyncio.wait_for(tool.execute(arguments), timeout=timeout)
+
+                # Validate output if enabled
+                if ctx.validation_enabled and tool.metadata.validation and tool.metadata.validation.output_schema:
+                    try:
+                        validate_schema(
+                            result,
+                            tool.metadata.validation.output_schema
+                        )
+                    except Exception as e:
+                        if self.enable_metrics:
+                            self._log_metrics(name, "validation_error", arguments)
+                            metrics.failed_calls += 1
+                        raise ToolError(
+                            "Invalid tool output: " + str(e),
+                            tool_name=name,
+                        ) from e  # Add from clause to preserve stack trace
+
+                # Cache result if enabled
+                if ctx.cache_enabled:
+                    self._cache[cache_key] = result
+
+                # Update metrics for success
+                if self.enable_metrics:
+                    metrics.successful_calls += 1
+                    execution_time = time.monotonic() - start_time
+                    if metrics.total_calls > 0:
+                        metrics.average_execution_time = (
+                            (metrics.average_execution_time * (metrics.total_calls - 1) + execution_time)
+                            / metrics.total_calls
+                        )
+                    self._log_metrics(
+                        name,
+                        "success",
+                        arguments,
+                        execution_time=execution_time,
+                    )
+
+                return result
+
             except asyncio.TimeoutError:
                 if self.enable_metrics:
                     self._log_metrics(name, "timeout", arguments, timeout=timeout)
                     metrics.failed_calls += 1
                 raise
-
-            # Validate output if enabled
-            if ctx.validation_enabled and tool.metadata.validation and tool.metadata.validation.output_schema:
-                try:
-                    validate_schema(
-                        result,
-                        tool.metadata.validation.output_schema
-                    )
-                except Exception as e:
-                    if self.enable_metrics:
-                        self._log_metrics(name, "validation_error", arguments)
-                        metrics.failed_calls += 1
-                    raise ToolError(
-                        "Invalid tool output: " + str(e),
-                        tool_name=name,
-                    )
-
-            # Cache result if enabled
-            if ctx.cache_enabled:
-                self._cache[cache_key] = result
-
-            # Update metrics for success
-            if self.enable_metrics:
-                metrics.successful_calls += 1
-                execution_time = time.monotonic() - start_time
-                if metrics.total_calls > 0:
-                    metrics.average_execution_time = (
-                        (metrics.average_execution_time * (metrics.total_calls - 1) + execution_time)
-                        / metrics.total_calls
-                    )
-                self._log_metrics(
-                    name,
-                    "success",
-                    arguments,
-                    execution_time=execution_time,
-                )
-
-            return result
+            except Exception as e:
+                if self.enable_metrics:
+                    metrics.failed_calls += 1
+                    self._log_metrics(name, "error", arguments, error=str(e))
+                raise ToolError(
+                    f"Tool {name} failed: {str(e)}",
+                    tool_name=name,
+                    cause=e
+                ) from e  # Add from clause to preserve stack trace
 
         except ToolError:
-            if self.enable_metrics:
-                metrics.failed_calls += 1
+            # Don't increment failed_calls here as it's already been incremented in the specific error handlers
             raise
-        except asyncio.TimeoutError:
-            if self.enable_metrics:
-                metrics.failed_calls += 1
-            raise
-        except Exception as e:
-            if self.enable_metrics:
-                metrics.failed_calls += 1
-                self._log_metrics(name, "error", arguments, error=str(e))
-            raise ToolError(
-                f"Tool {name} failed: {str(e)}",
-                tool_name=name,
-                cause=e
-            )
 
     def _log_metrics(
         self, tool_name: str, status: str, arguments: dict, **extra: Any
