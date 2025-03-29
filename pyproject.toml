@@ -29,6 +29,7 @@ dependencies = [
     "opentelemetry-api>=1.21.0",
     "opentelemetry-sdk>=1.21.0",
     "watchdog>=6.0.0",
+    "jsonschema>=4.23.0"
 ]
 
 [project.optional-dependencies]
@@ -60,7 +61,7 @@ validation = [
 ]
 
 [project.scripts]
-axiom-mcp = "axiom_mcp.cli:main"
+axiom-mcp = "axiom_mcp.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/axiom_mcp"]

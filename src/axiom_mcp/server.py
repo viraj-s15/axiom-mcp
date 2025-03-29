@@ -86,6 +86,13 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
+    # Production settings
+    production_mode: bool = False
+    optimize_memory: bool = False
+    gc_interval: int = 300  # Garbage collection interval in seconds
+    max_cached_items: int = 1000
+    request_timeout: int = 30
+
     # Manager settings
     warn_on_duplicate_tools: bool = True
     warn_on_duplicate_resources: bool = True

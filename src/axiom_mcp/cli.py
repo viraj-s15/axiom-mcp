@@ -117,21 +117,75 @@ class CodeReloader(FileSystemEventHandler):
                 break
 
 
+def run_production_server(file_path: Path):
+    try:
+        # Add file's directory to Python path
+        file_dir = str(file_path.parent)
+        if file_dir not in sys.path:
+            sys.path.insert(0, file_dir)
+
+        # Import module using importlib
+        module_name = file_path.stem
+        spec = importlib.util.spec_from_file_location(module_name, file_path)
+        if spec is None:
+            console.print(
+                f"[red]Could not load module specification from {file_path}[/]"
+            )
+            return
+
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        if spec.loader is None:
+            console.print(f"[red]Could not get loader for module {module_name}[/]")
+            return
+
+        spec.loader.exec_module(module)
+        server = getattr(module, "mcp", None)
+        if not server:
+            console.print("[red]No server object 'mcp' found in module[/]")
+            return
+
+        # Configure server for production
+        server.settings.debug = False
+        server.settings.log_level = "INFO"
+        server.settings.production_mode = True
+        server.settings.optimize_memory = True
+        server.settings.max_cached_items = 500  # Reduce cache size in production
+        server.settings.gc_interval = 300  # 5 minutes GC interval
+        server.settings.port = 8888
+
+        # Run server
+        console.print("[green]Production server started successfully![/]")
+        console.print(
+            "[yellow]Running with optimized memory settings and reduced logging[/]"
+        )
+        asyncio.run(server.run(transport="sse"))
+
+    except Exception as e:
+        console.print(f"[red]Error running server: {e}[/]")
+        return
+
+
+@app.callback(invoke_without_command=False)
+def callback():
+    """Axiom MCP CLI - Use 'dev' for development mode or 'run' for production mode."""
+    pass
+
+
 @app.command()
 def version():
     """Show version information."""
-    # Use print instead of console.print for test capturing
     print(f"Axiom MCP version {__version__}")
     return 0
 
 
 @app.command()
 def dev(
-    file_spec: str = typer.Argument(
-        ..., help="Python file to run, optionally with :object suffix"
-    ),
+    file_spec: Annotated[
+        str, typer.Argument(help="Python file to run in development mode")
+    ],
     with_editable: Annotated[
-        Path | None,
+        Optional[Path],
         typer.Option(
             "--with-editable",
             "-e",
@@ -147,9 +201,9 @@ def dev(
             "--with",
             help="Additional packages to install",
         ),
-    ] = list(),
+    ] = [],
     env_file: Annotated[
-        Path | None,
+        Optional[Path],
         typer.Option(
             "--env-file",
             "-f",
@@ -168,7 +222,7 @@ def dev(
         ),
     ] = False,
 ):
-    """Run an Axiom MCP server with the development UI."""
+    """Run an Axiom MCP server in development mode with hot reloading."""
     try:
         console.print("[green]Starting development server[/]")
         console.print("*" * 50)
@@ -201,8 +255,6 @@ def dev(
             reloader = CodeReloader(file_path)
             reloader.run_server_process(file_path)
 
-        return 0
-
     except typer.Exit:
         raise
     except Exception as e:
@@ -210,17 +262,23 @@ def dev(
         raise typer.Exit(code=1)
 
 
-def main():
-    """Main entry point for CLI."""
+@app.command()
+def run(
+    file_spec: Annotated[
+        str, typer.Argument(help="Python file to run in production mode")
+    ],
+):
+    """Run an Axiom MCP server in production mode."""
     try:
-        if sys.platform != "win32":
-            # Set up proper handling of subprocesses on Unix-like systems
-            multiprocessing.set_start_method("fork")
-        app()
+        file_path = Path(file_spec).resolve(strict=True)
+        run_production_server(file_path)
+    except (FileNotFoundError, RuntimeError):
+        console.print(f"[red]File not found: {file_spec}[/]")
+        raise typer.Exit(code=1)
     except Exception as e:
         console.print(f"[red]ERROR: {e}[/]")
-        sys.exit(1)
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
-    main()
+    app()
