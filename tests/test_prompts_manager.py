@@ -3,8 +3,9 @@
 import asyncio
 
 import pytest
+from mcp.types import TextContent
 
-from axiom_mcp.prompts.base import Prompt
+from axiom_mcp.prompts.base import Message, Prompt
 from axiom_mcp.prompts.manager import PromptManager
 
 
@@ -18,8 +19,11 @@ def manager() -> PromptManager:
 def sample_prompt() -> Prompt:
     """Create a sample prompt for testing."""
 
-    def example_fn(text: str) -> str:
-        return text
+    def example_fn(text: str) -> Message:
+        return Message(
+            content=TextContent(type="text", text=text),
+            role="assistant"
+        )
 
     return Prompt.from_function(
         fn=example_fn,

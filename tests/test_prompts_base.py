@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from datetime import datetime
+from datetime import datetime, UTC
 
 import pytest
-from mcp.types import EmbeddedResource, ImageContent, TextResourceContents
-from mcp.types import TextContent as MCPTextContent
+from mcp.types import EmbeddedResource, ImageContent, TextContent, TextResourceContents
 from pydantic import AnyUrl
 
 from axiom_mcp.prompts.base import (
@@ -20,8 +19,8 @@ from axiom_mcp.prompts.base import (
 
 def test_message_with_string_content() -> None:
     """Test message creation with string content."""
-    msg = Message(content=MCPTextContent(type="text", text="Hello"), role="user")
-    assert isinstance(msg.content, MCPTextContent)
+    msg = Message(content=TextContent(type="text", text="Hello"), role="user")
+    assert isinstance(msg.content, TextContent)
     assert msg.content.text == "Hello"
     assert msg.role == "user"
     assert isinstance(msg.timestamp, datetime)
@@ -29,7 +28,7 @@ def test_message_with_string_content() -> None:
 
 def test_message_with_text_content() -> None:
     """Test message creation with TextContent."""
-    content = MCPTextContent(type="text", text="Hello")
+    content = TextContent(type="text", text="Hello")
     msg = Message(content=content, role="user")
     assert msg.content == content
     assert msg.role == "user"
@@ -62,7 +61,7 @@ def test_message_metadata() -> None:
     """Test message metadata handling."""
     metadata = {"source": "test", "priority": 1}
     msg = Message(
-        content=MCPTextContent(type="text", text="Hello"),
+        content=TextContent(type="text", text="Hello"),
         role="user",
         metadata=metadata,
     )
@@ -137,14 +136,14 @@ async def test_prompt_rendering() -> None:
     result = await text_prompt.render({"text": "Hello"})
     assert len(result) == 1
     assert isinstance(result[0], UserMessage)
-    assert isinstance(result[0].content, MCPTextContent)
+    assert isinstance(result[0].content, TextContent)
     assert result[0].content.text == "Hello"
 
     # Test message rendering
     result = await message_prompt.render({"text": "Hello"})
     assert len(result) == 1
     assert isinstance(result[0], UserMessage)
-    assert isinstance(result[0].content, MCPTextContent)
+    assert isinstance(result[0].content, TextContent)
     assert result[0].content.text == "Hello"
 
     # Test list rendering
@@ -152,8 +151,8 @@ async def test_prompt_rendering() -> None:
     assert len(result) == 2
     assert isinstance(result[0], SystemMessage)
     assert isinstance(result[1], UserMessage)
-    assert isinstance(result[0].content, MCPTextContent)
-    assert isinstance(result[1].content, MCPTextContent)
+    assert isinstance(result[0].content, TextContent)
+    assert isinstance(result[1].content, TextContent)
     assert result[0].content.text == "Context"
     assert result[1].content.text == "Hello"
 
@@ -192,7 +191,7 @@ async def test_async_prompt() -> None:
     prompt = Prompt.from_function(fn=async_fn, name="async_prompt")
     result = await prompt.render({"text": "Hello"})
     assert len(result) == 1
-    assert isinstance(result[0].content, MCPTextContent)
+    assert isinstance(result[0].content, TextContent)
     assert result[0].content.text == "Async: Hello"
 
 
