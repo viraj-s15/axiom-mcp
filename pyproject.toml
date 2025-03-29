@@ -17,7 +17,6 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "httpx>=0.26.0",
     "mcp>=1.0.0,<2.0.0",
     "pydantic-settings>=2.6.1",
     "pydantic>=2.5.3,<3.0.0",
@@ -26,17 +25,9 @@ dependencies = [
     "aiofiles>=23.2.1",
     "aiohttp>=3.11.14",
     "cachetools>=5.3.2",
-    "jinja2>=3.1.6",
     "aiosqlite>=0.21.0",
-    # Dependencies for enhanced tools
-    "prometheus-client>=0.19.0",
     "opentelemetry-api>=1.21.0",
-    "opentelemetry-sdk>=1.21.0",
-    "opentelemetry-instrumentation>=0.42b0",
-    "asyncio-throttle>=1.0.2",
-    "redis>=5.0.1",  # For distributed caching
-    "pyyaml>=6.0.1",  # For config loading
-    "msgpack>=1.0.7",  # For efficient serialization
+    "opentelemetry-sdk>=1.21.0"
 ]
 
 [project.optional-dependencies]
@@ -52,29 +43,18 @@ dev = [
 ]
 
 db = [
-    "asyncpg>=0.29.0",
-    "aioredis>=2.0.1",
-]
-
-compression = [
-    "lz4>=4.3.2",
-    "zstandard>=0.22.0",
-    "brotli>=1.1.0",
+    "asyncpg>=0.29.0",  # PostgreSQL support
+    "aioredis>=2.0.1",  # Redis support
+    "msgpack>=1.0.7"    # Efficient serialization
 ]
 
 telemetry = [
-    "opentelemetry-instrumentation-aiohttp-client>=0.42b0",
-    "opentelemetry-instrumentation-fastapi>=0.42b0",
-    "opentelemetry-instrumentation-redis>=0.42b0",
+    "opentelemetry-instrumentation>=0.42b0",
+    "prometheus-client>=0.19.0"
 ]
 
 validation = [
-    "jsonschema>=4.21.1",
-    "pydantic[email]>=2.5.3",
-]
-
-all = [
-    "axiom-mcp[dev,db,compression,telemetry,validation]"
+    "pydantic[email]>=2.5.3"
 ]
 
 [project.scripts]
