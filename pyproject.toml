@@ -10,11 +10,19 @@ authors = [
 ]
 description = "Model Context Protocol (MCP) implementation for connecting AI systems with external data sources"
 readme = "README.md"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.12,<3.13"
+keywords = ["ai", "mcp", "model-context-protocol", "llm", "machine-learning", "axiom"]
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
     "mcp>=1.0.0,<2.0.0",
@@ -23,13 +31,13 @@ dependencies = [
     "typer>=0.9.0",
     "python-dotenv>=1.0.1",
     "aiofiles>=23.2.1",
-    "aiohttp>=3.11.14",
+    "aiohttp>=3.8.0",
     "cachetools>=5.3.2",
     "aiosqlite>=0.21.0",
     "opentelemetry-api>=1.21.0",
     "opentelemetry-sdk>=1.21.0",
     "watchdog>=6.0.0",
-    "jsonschema>=4.23.0"
+    "jsonschema>=4.23.0",
 ]
 
 [project.optional-dependencies]
@@ -42,7 +50,9 @@ dev = [
     "pre-commit>=3.0",
     "pytest-asyncio>=0.25.3",
     "rich>=13.9.4",
-    "watchdog==6.0.0"  # For hot reloading
+    "watchdog==6.0.0",
+    "build>=1.2.2.post1",
+    "twine>=6.1.0",
 ]
 
 db = [
