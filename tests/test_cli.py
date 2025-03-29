@@ -147,8 +147,8 @@ class TestTool(Tool):
     async def execute(self, args: dict[str, Any]) -> str:
         return "Test response"
 
-    async def run(self, **kwargs):
-        """Run the server."""
+    def run(self, **kwargs):
+        """Run the server - non-async version to avoid coroutine warning."""
         # Return immediately for testing
         return True
 
@@ -156,11 +156,15 @@ mcp = TestTool()
 '''
     )
 
-    # Define custom mock that properly handles awaiting the coroutine
-    async def mock_async_run(coro, *args, **kwargs):
-        if asyncio.iscoroutine(coro):
-            await coro  # Properly await the coroutine
-        return True
+    # Replace the asyncio.run patch with a proper implementation
+    def mock_async_run(coro):
+        # Create a new event loop for each test to avoid warnings
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
 
     # Test with all security features enabled
     with (

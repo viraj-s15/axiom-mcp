@@ -31,6 +31,10 @@ def sample_tool():
         async def execute(self, args):
             return {"status": "success"}
 
+        def run(self, **kwargs):
+            """Run method that doesn't create an unawaited coroutine."""
+            return None
+
     return TestTool
 
 
