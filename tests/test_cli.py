@@ -158,16 +158,8 @@ mcp = TestTool()
 
     # Define custom mock that properly handles awaiting the coroutine
     async def mock_async_run(coro, *args, **kwargs):
-        # If it's a coroutine, await it so it doesn't cause warnings
         if asyncio.iscoroutine(coro):
-            # Schedule it but don't block
-            task = asyncio.create_task(coro)
-            # Stop it immediately after scheduling
-            task.cancel()
-            try:
-                await asyncio.wait_for(task, timeout=0.1)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass  # Expected, we're canceling/timing out intentionally
+            await coro  # Properly await the coroutine
         return True
 
     # Test with all security features enabled

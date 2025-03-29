@@ -43,8 +43,8 @@ class ResourceValidationError(ValueError):
 class ResourceMetadata(BaseModel):
     """Resource metadata."""
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    modified_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    modified_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     size: int | None = Field(default=None, description="Size in bytes if known", ge=0)
     content_hash: str | None = Field(
         default=None, description="Content hash if available"
