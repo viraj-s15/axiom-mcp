@@ -135,17 +135,17 @@ class ToolManager:
         tool = tool_cls(context=ctx)
         start_time = time.monotonic()
 
+        # Initialize metrics
+        metrics = self._metrics[name] if self.enable_metrics else ToolMetrics()
+
         try:
-            # Update metrics at start of execution attempt
             if self.enable_metrics:
-                metrics = self._metrics[name]
                 metrics.total_calls += 1
                 metrics.last_used = datetime.now(UTC)
 
             # Check cache first
             cache_key = self._get_cache_key(name, arguments)
             if ctx.cache_enabled and cache_key in self._cache:
-                # Update metrics for cache hit
                 if self.enable_metrics:
                     metrics.successful_calls += 1
                 return self._cache[cache_key]
@@ -160,6 +160,7 @@ class ToolManager:
                 except Exception as e:
                     if self.enable_metrics:
                         self._log_metrics(name, "validation_error", arguments)
+                        metrics.failed_calls += 1
                     raise ToolError(
                         "Invalid tool input: " + str(e),
                         tool_name=name,
@@ -169,7 +170,6 @@ class ToolManager:
             try:
                 result = await asyncio.wait_for(tool.execute(arguments), timeout=timeout)
             except asyncio.TimeoutError:
-                # Update metrics but preserve the TimeoutError
                 if self.enable_metrics:
                     self._log_metrics(name, "timeout", arguments, timeout=timeout)
                     metrics.failed_calls += 1
@@ -185,6 +185,7 @@ class ToolManager:
                 except Exception as e:
                     if self.enable_metrics:
                         self._log_metrics(name, "validation_error", arguments)
+                        metrics.failed_calls += 1
                     raise ToolError(
                         "Invalid tool output: " + str(e),
                         tool_name=name,
@@ -198,7 +199,7 @@ class ToolManager:
             if self.enable_metrics:
                 metrics.successful_calls += 1
                 execution_time = time.monotonic() - start_time
-                if metrics.total_calls > 0:  # Guard against division by zero
+                if metrics.total_calls > 0:
                     metrics.average_execution_time = (
                         (metrics.average_execution_time * (metrics.total_calls - 1) + execution_time)
                         / metrics.total_calls
@@ -213,12 +214,13 @@ class ToolManager:
             return result
 
         except ToolError:
-            # Don't wrap ToolError, but update failed calls count
             if self.enable_metrics:
                 metrics.failed_calls += 1
             raise
         except asyncio.TimeoutError:
-            raise  # Let TimeoutError pass through unchanged
+            if self.enable_metrics:
+                metrics.failed_calls += 1
+            raise
         except Exception as e:
             if self.enable_metrics:
                 metrics.failed_calls += 1
@@ -336,10 +338,13 @@ class ToolManager:
             raise ToolError(f"Tool does not support streaming: {tool_name}")
 
         start_time = time.monotonic()
+        
+        # Initialize metrics
+        metrics = self._metrics[tool_name] if self.enable_metrics else ToolMetrics()
+        
         try:
             # Update metrics at start of execution attempt
             if self.enable_metrics:
-                metrics = self._metrics[tool_name]
                 metrics.total_calls += 1
                 metrics.last_used = datetime.now(UTC)
 
@@ -351,7 +356,7 @@ class ToolManager:
             if self.enable_metrics:
                 metrics.successful_calls += 1
                 execution_time = time.monotonic() - start_time
-                if metrics.total_calls > 0:  # Guard against division by zero
+                if metrics.total_calls > 0:
                     metrics.average_execution_time = (
                         (metrics.average_execution_time * (metrics.total_calls - 1) + execution_time)
                         / metrics.total_calls
@@ -359,7 +364,6 @@ class ToolManager:
 
         except Exception as e:
             if self.enable_metrics:
-                metrics = self._metrics[tool_name]
                 metrics.failed_calls += 1
             raise ToolError(
                 message=str(e),

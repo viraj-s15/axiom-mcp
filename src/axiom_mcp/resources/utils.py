@@ -83,8 +83,13 @@ def guess_resource_type(uri: str, content: str | bytes | None = None) -> Resourc
     # Check file extension
     if "." in parsed.path:
         mime_type, _ = mimetypes.guess_type(parsed.path)
-        if mime_type and mime_type.startswith("text/"):
-            return ResourceType.TEXT
+        if mime_type:
+            # Handle common binary formats
+            if (mime_type.startswith(("application/", "image/", "audio/", "video/")) or 
+                parsed.path.lower().endswith((".bin", ".exe", ".dll", ".so", ".dylib"))):
+                return ResourceType.BINARY
+            if mime_type.startswith("text/"):
+                return ResourceType.TEXT
 
     return ResourceType.TEXT
 
@@ -95,6 +100,8 @@ def create_resource_uri(
     resource_type: ResourceType | None = None,
 ) -> str:
     """Create a properly formatted resource URI."""
+    from urllib.parse import quote
+
     if isinstance(path, Path):
         path = str(path.absolute())
 
@@ -102,7 +109,39 @@ def create_resource_uri(
     scheme = (
         str(resource_type.name.lower()) if resource_type else (scheme or "resource")
     )
-    return f"{scheme}://{path}" if "://" not in path else path
+
+    if "://" in path:
+        return path
+
+    # For template URIs, don't encode the template parameters
+    if resource_type == ResourceType.TEMPLATE or (scheme and scheme == "template"):
+        # We still need to encode other special characters, just not { and }
+        parts = []
+        current = ""
+        i = 0
+        while i < len(path):
+            if path[i:i+1] == "{":
+                if current:
+                    parts.append(quote(current))
+                    current = ""
+                template_part = ""
+                i += 1
+                while i < len(path) and path[i:i+1] != "}":
+                    template_part += path[i]
+                    i += 1
+                if i < len(path):
+                    parts.append("{" + template_part + "}")
+                i += 1
+            else:
+                current += path[i]
+                i += 1
+        if current:
+            parts.append(quote(current))
+        encoded_path = "".join(parts)
+    else:
+        encoded_path = quote(path)
+    
+    return f"{scheme}://{encoded_path}"
 
 
 def calculate_content_hash(content: str | bytes) -> str:
