@@ -120,5 +120,4 @@ uv pip install package-name
 5. Submit a pull request
 
 ## License
-
-MIT License
+GNU General Public License v3 (GPLv3)

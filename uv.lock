@@ -148,7 +148,7 @@ wheels = [
 
 [[package]]
 name = "axiom-mcp"
-version = "0.1.6"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
@@ -162,7 +162,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
-    { name = "twine" },
     { name = "typer" },
     { name = "watchdog" },
 ]
@@ -222,7 +221,6 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "rich", marker = "extra == 'dev'", specifier = ">=13.9.4" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
-    { name = "twine", specifier = ">=6.1.0" },
     { name = "twine", marker = "extra == 'dev'", specifier = ">=6.1.0" },
     { name = "typer", specifier = ">=0.9.0" },
     { name = "watchdog", specifier = ">=6.0.0" },
