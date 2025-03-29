@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from datetime import datetime, UTC
+from datetime import datetime
 
 import pytest
 from mcp.types import EmbeddedResource, ImageContent, TextContent, TextResourceContents

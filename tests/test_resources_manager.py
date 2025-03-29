@@ -1,14 +1,13 @@
 """Tests for resource manager functionality."""
 
 import asyncio
-from datetime import UTC, datetime
 
 import pytest
 from pydantic import AnyUrl
 
 from axiom_mcp.exceptions import ResourceError
 from axiom_mcp.resources.advanced_types import TemplateResource
-from axiom_mcp.resources.base import Resource, ResourceType
+from axiom_mcp.resources.base import Resource
 from axiom_mcp.resources.manager import ResourceManager
 from axiom_mcp.resources.types import TextResource
 
@@ -32,14 +31,15 @@ def text_resource():
 @pytest.fixture
 def template_resource():
     """Create a sample template resource."""
+
     def template_fn(param: str) -> str:
         return f"Template with {param}"
-        
+
     return TemplateResource(
         uri=AnyUrl("template://test/{param}"),
         uri_template="template://test/{param}",
         name="test_template",
-        fn=template_fn
+        fn=template_fn,
     )
 
 
@@ -121,7 +121,7 @@ async def test_template_matching(
 ):
     """Test template resource matching and instantiation."""
     await manager.add_resource(template_resource)
-    
+
     # Test matching URI
     test_uri = "template://test/value"
     resource = await manager.get_resource(test_uri)
@@ -136,7 +136,7 @@ async def test_template_no_match(
 ):
     """Test template resource with non-matching URI."""
     await manager.add_resource(template_resource)
-    
+
     with pytest.raises(ResourceError, match="Resource not found"):
         await manager.get_resource("template://different/value")
 
@@ -163,6 +163,6 @@ async def test_concurrent_resource_access(
     # Create multiple concurrent read operations
     tasks = [read_resource() for _ in range(5)]
     results = await asyncio.gather(*tasks)
-    
+
     # Verify all reads were successful
     assert all(result == "Test content" for result in results)

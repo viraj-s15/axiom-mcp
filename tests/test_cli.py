@@ -65,12 +65,12 @@ mcp = EchoTool()
         # Configure mock to return True
         mock_run.return_value = True
         result = runner.invoke(app, ["dev", str(server_file)])
-        
+
         # Debug output if test fails
         if result.exit_code != 0:
             print(f"Output: {result.output}")
             print(f"Exception: {result.exception}")
-            
+
         assert result.exit_code == 0
         assert "Starting development server" in result.output
         mock_run.assert_called_once()

@@ -85,8 +85,11 @@ def guess_resource_type(uri: str, content: str | bytes | None = None) -> Resourc
         mime_type, _ = mimetypes.guess_type(parsed.path)
         if mime_type:
             # Handle common binary formats
-            if (mime_type.startswith(("application/", "image/", "audio/", "video/")) or 
-                parsed.path.lower().endswith((".bin", ".exe", ".dll", ".so", ".dylib"))):
+            if mime_type.startswith(
+                ("application/", "image/", "audio/", "video/")
+            ) or parsed.path.lower().endswith(
+                (".bin", ".exe", ".dll", ".so", ".dylib")
+            ):
                 return ResourceType.BINARY
             if mime_type.startswith("text/"):
                 return ResourceType.TEXT
@@ -120,13 +123,13 @@ def create_resource_uri(
         current = ""
         i = 0
         while i < len(path):
-            if path[i:i+1] == "{":
+            if path[i : i + 1] == "{":
                 if current:
                     parts.append(quote(current))
                     current = ""
                 template_part = ""
                 i += 1
-                while i < len(path) and path[i:i+1] != "}":
+                while i < len(path) and path[i : i + 1] != "}":
                     template_part += path[i]
                     i += 1
                 if i < len(path):
@@ -140,7 +143,7 @@ def create_resource_uri(
         encoded_path = "".join(parts)
     else:
         encoded_path = quote(path)
-    
+
     return f"{scheme}://{encoded_path}"
 
 

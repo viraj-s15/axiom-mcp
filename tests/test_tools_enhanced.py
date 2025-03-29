@@ -13,6 +13,7 @@ from axiom_mcp.tools.base import Tool, ToolContext, ToolMetadata, ToolValidation
 def tool_manager():
     """Create a tool manager instance."""
     from axiom_mcp.tools.manager import ToolManager
+
     return ToolManager(cache_size=10, default_timeout=5.0, enable_metrics=True)
 
 
@@ -29,14 +30,14 @@ def validation_tool():
                 input_schema={
                     "type": "object",
                     "properties": {"text": {"type": "string"}},
-                    "required": ["text"]
+                    "required": ["text"],
                 },
                 output_schema={
                     "type": "object",
                     "properties": {"result": {"type": "string"}},
-                    "required": ["result"]
-                }
-            )
+                    "required": ["result"],
+                },
+            ),
         )
 
         async def execute(self, args: dict[str, Any]) -> dict[str, str]:
@@ -50,20 +51,20 @@ def validation_tool():
 @pytest.fixture
 def slow_tool():
     """Create a tool that takes time to execute."""
-    
+
     class SlowTool(Tool):
         metadata = ToolMetadata(
             name="slow_tool",
             version="1.0.0",
             description="A deliberately slow tool",
             validation=None,
-            author=None
+            author=None,
         )
-        
+
         async def execute(self, args: dict[str, Any]) -> dict[str, bool]:
             await asyncio.sleep(2.0)  # Make it consistently slow
             return {"done": True}
-    
+
     return SlowTool
 
 
@@ -77,7 +78,7 @@ def cacheable_tool():
             version="1.0.0",
             description="Cacheable tool",
             validation=None,
-            author=None
+            author=None,
         )
 
         _execution_count: ClassVar[int] = 0
@@ -112,7 +113,7 @@ def streaming_tool():
             description="Streaming tool",
             validation=None,
             author=None,
-            supports_streaming=True
+            supports_streaming=True,
         )
 
         async def execute(self, args: dict[str, Any]) -> Any:
@@ -136,7 +137,7 @@ def dry_run_tool():
             version="1.0.0",
             description="Tool with dry run support",
             validation=None,
-            author=None
+            author=None,
         )
 
         async def execute(self, args: dict[str, Any]) -> dict[str, Any]:

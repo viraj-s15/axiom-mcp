@@ -97,7 +97,12 @@ def test_guess_resource_type(uri, content, expected_type):
         ("test", None, ResourceType.TEXT, "text://test"),
         ("test.json", "data", None, "data://test.json"),
         ("/path/with spaces.txt", "file", None, "file:///path/with%20spaces.txt"),
-        ("template/{param}", None, ResourceType.TEMPLATE, "template://template/{param}"),
+        (
+            "template/{param}",
+            None,
+            ResourceType.TEMPLATE,
+            "template://template/{param}",
+        ),
     ],
 )
 def test_create_resource_uri(path, scheme, resource_type, expected):
@@ -110,20 +115,20 @@ def test_calculate_content_hash():
     """Test content hash calculation."""
     text_content = "Hello, World!"
     binary_content = b"Hello, Binary World!"
-    
+
     text_hash = calculate_content_hash(text_content)
     binary_hash = calculate_content_hash(binary_content)
-    
+
     # Test that hashes are strings and non-empty
     assert isinstance(text_hash, str)
     assert isinstance(binary_hash, str)
     assert len(text_hash) > 0
     assert len(binary_hash) > 0
-    
+
     # Test that same content produces same hash
     assert calculate_content_hash(text_content) == text_hash
     assert calculate_content_hash(binary_content) == binary_hash
-    
+
     # Test that different content produces different hashes
     assert calculate_content_hash("Different content") != text_hash
     assert calculate_content_hash(b"Different binary") != binary_hash

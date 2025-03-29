@@ -23,12 +23,14 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+
 @app.command()
 def version():
     """Show version information."""
     # Use print instead of console.print for test capturing
     print(f"Axiom MCP version {__version__}")
     return 0
+
 
 @app.command()
 def dev(
@@ -93,15 +95,15 @@ def dev(
             if spec is None:
                 print(f"Could not load module specification from {file_path}")
                 raise typer.Exit(code=1)
-                
+
             module = importlib.util.module_from_spec(spec)
             sys.modules[module_name] = module
             if spec.loader is None:
                 print(f"Could not get loader for module {module_name}")
                 raise typer.Exit(code=1)
-                
+
             spec.loader.exec_module(module)
-            
+
             server = getattr(module, "mcp", None)
             if not server:
                 print("No server object 'mcp' found in module")
@@ -130,6 +132,7 @@ def dev(
         print(f"ERROR: {e}")
         raise typer.Exit(code=1)
 
+
 def main():
     """Main entry point for CLI."""
     try:
@@ -137,6 +140,7 @@ def main():
     except Exception as e:
         print(f"ERROR: {e}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

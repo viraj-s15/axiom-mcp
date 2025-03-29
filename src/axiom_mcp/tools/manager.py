@@ -153,10 +153,7 @@ class ToolManager:
             # First try to validate the input if enabled
             if ctx.validation_enabled and tool.metadata.validation:
                 try:
-                    validate_schema(
-                        arguments,
-                        tool.metadata.validation.input_schema
-                    )
+                    validate_schema(arguments, tool.metadata.validation.input_schema)
                 except Exception as e:
                     if self.enable_metrics:
                         self._log_metrics(name, "validation_error", arguments)
@@ -168,15 +165,18 @@ class ToolManager:
 
             # Execute with timeout
             try:
-                result = await asyncio.wait_for(tool.execute(arguments), timeout=timeout)
+                result = await asyncio.wait_for(
+                    tool.execute(arguments), timeout=timeout
+                )
 
                 # Validate output if enabled
-                if ctx.validation_enabled and tool.metadata.validation and tool.metadata.validation.output_schema:
+                if (
+                    ctx.validation_enabled
+                    and tool.metadata.validation
+                    and tool.metadata.validation.output_schema
+                ):
                     try:
-                        validate_schema(
-                            result,
-                            tool.metadata.validation.output_schema
-                        )
+                        validate_schema(result, tool.metadata.validation.output_schema)
                     except Exception as e:
                         if self.enable_metrics:
                             self._log_metrics(name, "validation_error", arguments)
@@ -196,9 +196,9 @@ class ToolManager:
                     execution_time = time.monotonic() - start_time
                     if metrics.total_calls > 0:
                         metrics.average_execution_time = (
-                            (metrics.average_execution_time * (metrics.total_calls - 1) + execution_time)
-                            / metrics.total_calls
-                        )
+                            metrics.average_execution_time * (metrics.total_calls - 1)
+                            + execution_time
+                        ) / metrics.total_calls
                     self._log_metrics(
                         name,
                         "success",
@@ -218,9 +218,7 @@ class ToolManager:
                     metrics.failed_calls += 1
                     self._log_metrics(name, "error", arguments, error=str(e))
                 raise ToolError(
-                    f"Tool {name} failed: {str(e)}",
-                    tool_name=name,
-                    cause=e
+                    f"Tool {name} failed: {str(e)}", tool_name=name, cause=e
                 ) from e  # Add from clause to preserve stack trace
 
         except ToolError:
@@ -334,10 +332,10 @@ class ToolManager:
             raise ToolError(f"Tool does not support streaming: {tool_name}")
 
         start_time = time.monotonic()
-        
+
         # Initialize metrics
         metrics = self._metrics[tool_name] if self.enable_metrics else ToolMetrics()
-        
+
         try:
             # Update metrics at start of execution attempt
             if self.enable_metrics:
@@ -354,9 +352,9 @@ class ToolManager:
                 execution_time = time.monotonic() - start_time
                 if metrics.total_calls > 0:
                     metrics.average_execution_time = (
-                        (metrics.average_execution_time * (metrics.total_calls - 1) + execution_time)
-                        / metrics.total_calls
-                    )
+                        metrics.average_execution_time * (metrics.total_calls - 1)
+                        + execution_time
+                    ) / metrics.total_calls
 
         except Exception as e:
             if self.enable_metrics:

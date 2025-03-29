@@ -256,13 +256,20 @@ async def test_prompt_decorator_return_types(
 
     @prompt(registry=registry_instance)
     def message_prompt() -> Message:
-        return Message(content=TextContent(type="text", text="Message response"), role="assistant")
+        return Message(
+            content=TextContent(type="text", text="Message response"), role="assistant"
+        )
 
     @prompt(registry=registry_instance)
     def list_prompt() -> list[Message]:
         return [
-            Message(content=TextContent(type="text", text="First message"), role="assistant"),
-            Message(content=TextContent(type="text", text="Second message"), role="assistant"),
+            Message(
+                content=TextContent(type="text", text="First message"), role="assistant"
+            ),
+            Message(
+                content=TextContent(type="text", text="Second message"),
+                role="assistant",
+            ),
         ]
 
     # Test string return

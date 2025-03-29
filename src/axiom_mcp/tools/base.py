@@ -49,14 +49,19 @@ class ToolValidation(BaseModel):
 
 class ToolValidationSchema(ToolValidation):
     """Schema-based validation configuration for tool inputs and outputs.
-    
+
     This class extends ToolValidation to support Python type hints as schema definitions.
     It converts Python types to JSON Schema compatible formats.
     """
-    
-    def __init__(self, *, input_schema: dict[str, tuple[type, ...]], output_schema: dict[str, tuple[type, ...]]) -> None:
+
+    def __init__(
+        self,
+        *,
+        input_schema: dict[str, tuple[type, ...]],
+        output_schema: dict[str, tuple[type, ...]],
+    ) -> None:
         """Initialize with Python type-based schemas.
-        
+
         Args:
             input_schema: Dict mapping field names to (type, ...) tuples where ... indicates required
             output_schema: Dict mapping field names to (type, ...) tuples where ... indicates required
@@ -65,42 +70,45 @@ class ToolValidationSchema(ToolValidation):
         converted_output = self._convert_type_schema(output_schema)
         super().__init__(input_schema=converted_input, output_schema=converted_output)
 
-    def _convert_type_schema(self, schema: dict[str, tuple[type, ...]]) -> dict[str, Any]:
+    def _convert_type_schema(
+        self, schema: dict[str, tuple[type, ...]]
+    ) -> dict[str, Any]:
         """Convert Python type schema to JSON Schema format."""
         properties = {}
         required = []
-        
+
         for field_name, type_info in schema.items():
             field_type = type_info[0]
             is_required = len(type_info) > 1 and type_info[1] is ...
-            
+
             if is_required:
                 required.append(field_name)
-                
+
             properties[field_name] = self._type_to_json_schema(field_type)
-            
+
         return {
             "type": "object",
             "properties": properties,
             "required": required,
         }
-    
+
     def _type_to_json_schema(self, type_hint: type) -> dict[str, Any]:
         """Convert Python type to JSON Schema type definition."""
-        if type_hint == str:
-            return {"type": "string"}
-        elif type_hint == int:
-            return {"type": "integer"}
-        elif type_hint == float:
-            return {"type": "number"}
-        elif type_hint == bool:
-            return {"type": "boolean"}
-        elif type_hint == list:
-            return {"type": "array"}
-        elif type_hint == dict:
-            return {"type": "object"}
-        else:
-            return {}  # Default to any type if unknown
+        match type_hint:
+            case type() if type_hint is str:
+                return {"type": "string"}
+            case type() if type_hint is int:
+                return {"type": "integer"}
+            case type() if type_hint is float:
+                return {"type": "number"}
+            case type() if type_hint is bool:
+                return {"type": "boolean"}
+            case type() if type_hint is list:
+                return {"type": "array"}
+            case type() if type_hint is dict:
+                return {"type": "object"}
+            case _:
+                return {}  # Default to any type if unknown
 
 
 class ToolMetadata(BaseModel):
@@ -110,7 +118,7 @@ class ToolMetadata(BaseModel):
         "extra": "forbid",
         "validate_assignment": True,
         "validate_default": True,
-        "populate_by_name": True
+        "populate_by_name": True,
     }
 
     name: str = Field(..., description="Name of the tool")

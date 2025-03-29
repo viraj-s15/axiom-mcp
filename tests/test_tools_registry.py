@@ -23,7 +23,9 @@ def sample_tool():
             name="test_tool",
             version="1.0.0",
             description="A test tool",
-            dependencies=[ToolDependency(name="dep_tool", version="1.0.0", command="dep_command")],
+            dependencies=[
+                ToolDependency(name="dep_tool", version="1.0.0", command="dep_command")
+            ],
         )
 
         async def execute(self, args):
@@ -41,7 +43,11 @@ def dependent_tool():
             name="dependent_tool",
             version="1.0.0",
             description="A dependent tool",
-            dependencies=[ToolDependency(name="test_tool", version="1.0.0", command="test_command")],
+            dependencies=[
+                ToolDependency(
+                    name="test_tool", version="1.0.0", command="test_command"
+                )
+            ],
         )
 
         async def execute(self, args):
