@@ -4,7 +4,7 @@ import asyncio
 import inspect
 import logging
 from collections.abc import AsyncGenerator, Callable
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -24,6 +24,11 @@ class ToolDependency(BaseModel):
         None, description="Custom install command if not using standard source"
     )
 
+    @property
+    def tool_name(self) -> str:
+        """Alias for name field to maintain compatibility."""
+        return self.name
+
 
 class ToolValidation(BaseModel):
     """Validation configuration for tool inputs and outputs."""
@@ -42,15 +47,78 @@ class ToolValidation(BaseModel):
     )
 
 
+class ToolValidationSchema(ToolValidation):
+    """Schema-based validation configuration for tool inputs and outputs.
+    
+    This class extends ToolValidation to support Python type hints as schema definitions.
+    It converts Python types to JSON Schema compatible formats.
+    """
+    
+    def __init__(self, *, input_schema: dict[str, tuple[type, ...]], output_schema: dict[str, tuple[type, ...]]) -> None:
+        """Initialize with Python type-based schemas.
+        
+        Args:
+            input_schema: Dict mapping field names to (type, ...) tuples where ... indicates required
+            output_schema: Dict mapping field names to (type, ...) tuples where ... indicates required
+        """
+        converted_input = self._convert_type_schema(input_schema)
+        converted_output = self._convert_type_schema(output_schema)
+        super().__init__(input_schema=converted_input, output_schema=converted_output)
+
+    def _convert_type_schema(self, schema: dict[str, tuple[type, ...]]) -> dict[str, Any]:
+        """Convert Python type schema to JSON Schema format."""
+        properties = {}
+        required = []
+        
+        for field_name, type_info in schema.items():
+            field_type = type_info[0]
+            is_required = len(type_info) > 1 and type_info[1] is ...
+            
+            if is_required:
+                required.append(field_name)
+                
+            properties[field_name] = self._type_to_json_schema(field_type)
+            
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+        }
+    
+    def _type_to_json_schema(self, type_hint: type) -> dict[str, Any]:
+        """Convert Python type to JSON Schema type definition."""
+        if type_hint == str:
+            return {"type": "string"}
+        elif type_hint == int:
+            return {"type": "integer"}
+        elif type_hint == float:
+            return {"type": "number"}
+        elif type_hint == bool:
+            return {"type": "boolean"}
+        elif type_hint == list:
+            return {"type": "array"}
+        elif type_hint == dict:
+            return {"type": "object"}
+        else:
+            return {}  # Default to any type if unknown
+
+
 class ToolMetadata(BaseModel):
     """Metadata for a tool."""
+
+    model_config = {
+        "extra": "forbid",
+        "validate_assignment": True,
+        "validate_default": True,
+        "populate_by_name": True
+    }
 
     name: str = Field(..., description="Name of the tool")
     version: str = Field(default="1.0.0", description="Tool version")
     description: str = Field(
         default="", description="Description of what the tool does"
     )
-    author: str | None = Field(None, description="Tool author")
+    author: Optional[str] = Field(default=None, description="Tool author")
     tags: list[str] = Field(
         default_factory=list, description="Tool tags for categorization"
     )
@@ -59,7 +127,7 @@ class ToolMetadata(BaseModel):
         description="Tool dependencies",
     )
     validation: ToolValidation | None = Field(
-        None,
+        default=None,
         description="Schema validation configuration",
     )
     supports_streaming: bool = Field(

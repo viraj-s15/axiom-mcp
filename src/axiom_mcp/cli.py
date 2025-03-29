@@ -5,10 +5,12 @@ import sys
 import os
 from pathlib import Path
 from typing import Annotated
+import importlib.util
 
 import typer
 from rich.console import Console
 
+from . import __version__
 
 # Configure console with immediate flush
 console = Console(file=sys.stdout, force_terminal=True)
@@ -21,6 +23,12 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+@app.command()
+def version():
+    """Show version information."""
+    # Use print instead of console.print for test capturing
+    print(f"Axiom MCP version {__version__}")
+    return 0
 
 @app.command()
 def dev(
@@ -60,142 +68,75 @@ def dev(
 ):
     """Run an Axiom MCP server with the development UI."""
     try:
+        print("Starting development server")
         print("*" * 50)
-        print("TESTING AXIOM MCP")
         print(f"Current directory: {os.getcwd()}")
         print(f"Python path: {sys.path}")
         print("*" * 50)
 
-        # Add current directory to Python path
-        if str(Path.cwd()) not in sys.path:
-            sys.path.insert(0, str(Path.cwd()))
+        # Check if file exists
+        try:
+            file_path = Path(file_spec).resolve(strict=True)
+        except (FileNotFoundError, RuntimeError):
+            print(f"File not found: {file_spec}")
+            raise typer.Exit(code=1)
 
-        print(f"Importing server from {file_spec}...")
-        # Parse file path to get module path
-        file_path = Path(file_spec).resolve()
+        # Add file's directory to Python path
+        file_dir = str(file_path.parent)
+        if file_dir not in sys.path:
+            sys.path.insert(0, file_dir)
 
-        # Construct module path based on the new src structure
-        rel_path = file_path.relative_to(Path.cwd())
-        if str(rel_path).startswith("src/"):
-            # Remove 'src/' prefix for import
-            module_path = str(rel_path)[4:].replace("/", ".").replace(".py", "")
-        else:
-            module_path = str(rel_path).replace("/", ".").replace(".py", "")
+        try:
+            # Import module using importlib for better control
+            module_name = file_path.stem
+            spec = importlib.util.spec_from_file_location(module_name, file_path)
+            if spec is None:
+                print(f"Could not load module specification from {file_path}")
+                raise typer.Exit(code=1)
+                
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            if spec.loader is None:
+                print(f"Could not get loader for module {module_name}")
+                raise typer.Exit(code=1)
+                
+            spec.loader.exec_module(module)
+            
+            server = getattr(module, "mcp", None)
+            if not server:
+                print("No server object 'mcp' found in module")
+                raise typer.Exit(code=1)
 
-        # Import the module and get server object
-        module = __import__(module_path, fromlist=["*"])
-        server = getattr(module, "mcp", None)
+            # Configure server
+            server.settings.debug = True
+            server.settings.log_level = "debug"
+            server.settings.port = 8888
 
-        if not server:
-            print("No server object 'mcp' found")
-            sys.exit(1)
+            # Run server
+            print("Starting server...")
+            asyncio.run(server.run(transport="sse"))
+            return 0
 
-        print(f"Server object: {server}")
-        print(f"Server settings: {server.settings}")
+        except ImportError as e:
+            print(f"Could not import module: {e}")
+            raise typer.Exit(code=1)
+        except Exception as e:
+            print(f"Error running server: {e}")
+            raise typer.Exit(code=1)
 
-        # Configure server
-        print("Running server...")
-        server.settings.debug = True
-        server.settings.log_level = "debug"
-
-        # Get server info
-        print("Getting server components...")
-        tools = asyncio.run(server.list_tools())
-        prompts = asyncio.run(server.list_prompts())
-        resources = asyncio.run(server.list_resources())
-
-        print(f"Tools: {tools}")
-        print(f"Prompts: {prompts}")
-        print(f"Resources: {resources}")
-
-        # Use test1.py port
-        server.settings.port = 8888
-        print(f"Starting server on port {server.settings.port}...")
-
-        # Run server
-        asyncio.run(server.run(transport="sse"))
-
+    except typer.Exit:
+        raise
     except Exception as e:
-        import traceback
-
         print(f"ERROR: {e}")
-        traceback.print_exc()
-        sys.exit(1)
-
+        raise typer.Exit(code=1)
 
 def main():
     """Main entry point for CLI."""
-    # Simple direct implementation that works just like test1.py
     try:
-        # Check if running the development server
-        if len(sys.argv) >= 2 and sys.argv[1] == "dev":
-            if len(sys.argv) < 3:
-                print("Error: Missing server file path")
-                print("Usage: axiom-mcp dev <server_file.py>")
-                sys.exit(1)
-
-            file_path = sys.argv[2]
-            print("*" * 50)
-            print("AXIOM MCP CLI")
-            print(f"Current directory: {os.getcwd()}")
-            print("*" * 50)
-
-            # Add current directory to Python path
-            if os.getcwd() not in sys.path:
-                sys.path.insert(0, os.getcwd())
-
-            print(f"Importing server from {file_path}...")
-
-            # Handle the src folder structure
-            if file_path.startswith("src/"):
-                module_path = file_path[4:].replace("/", ".").replace(".py", "")
-            else:
-                module_path = file_path.replace("/", ".").replace(".py", "")
-
-            try:
-                module = __import__(module_path, fromlist=["*"])
-                server = getattr(module, "mcp")
-
-                print(f"Server object: {server}")
-                print(f"Server settings: {server.settings}")
-
-                # Configure and run the server
-                print("Running server...")
-                server.settings.debug = True
-                server.settings.log_level = "debug"
-
-                # Get server components
-                tools = asyncio.run(server.list_tools())
-                prompts = asyncio.run(server.list_prompts())
-                resources = asyncio.run(server.list_resources())
-
-                print(f"Tools: {tools}")
-                print(f"Prompts: {prompts}")
-                print(f"Resources: {resources}")
-
-                # Use port 8888
-                server.settings.port = 8888
-                print(f"Starting server on port {server.settings.port}...")
-
-                # Run the server
-                asyncio.run(server.run(transport="sse"))
-
-            except Exception as e:
-                import traceback
-
-                print(f"ERROR: {e}")
-                traceback.print_exc()
-                sys.exit(1)
-        else:
-            # Use typer for other commands
-            app()
+        app()
     except Exception as e:
-        import traceback
-
         print(f"ERROR: {e}")
-        traceback.print_exc()
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()

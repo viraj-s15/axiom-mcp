@@ -113,8 +113,8 @@ class ToolManager:
             raise ToolError(f"Tool {tool_name} missing execute method")
 
         # Initialize metrics
-        if self.enable_metrics and tool_name not in self._metrics:
-            self._metrics[tool_name] = ToolMetrics()
+        if self.enable_metrics:
+            self._metrics[tool_name] = ToolMetrics(total_calls=0)
 
         self._tools[tool_name] = tool
 
@@ -129,62 +129,105 @@ class ToolManager:
 
         # Use context or create default
         ctx = context or ToolContext()
-        timeout = ctx.timeout or self.default_timeout  # Define timeout early
+        timeout = ctx.timeout or self.default_timeout
 
-        # Check cache first
-        cache_key = self._get_cache_key(name, arguments)
-        if ctx.cache_enabled and cache_key in self._cache:
-            return self._cache[cache_key]
-
-        metrics = self._metrics.get(name) if self.enable_metrics else None
+        # Create tool instance with context
+        tool = tool_cls(context=ctx)
         start_time = time.monotonic()
 
         try:
-            tool = tool_cls()
+            # Update metrics at start of execution attempt
+            if self.enable_metrics:
+                metrics = self._metrics[name]
+                metrics.total_calls += 1
+                metrics.last_used = datetime.now(UTC)
+
+            # Check cache first
+            cache_key = self._get_cache_key(name, arguments)
+            if ctx.cache_enabled and cache_key in self._cache:
+                # Update metrics for cache hit
+                if self.enable_metrics:
+                    metrics.successful_calls += 1
+                return self._cache[cache_key]
+
+            # First try to validate the input if enabled
             if ctx.validation_enabled and tool.metadata.validation:
                 try:
-                    validate_schema(arguments, tool.metadata.validation.input_schema)
+                    validate_schema(
+                        arguments,
+                        tool.metadata.validation.input_schema
+                    )
                 except Exception as e:
-                    if metrics:
+                    if self.enable_metrics:
                         self._log_metrics(name, "validation_error", arguments)
                     raise ToolError(
-                        f"Invalid arguments for tool {name}: {str(e)}",
+                        "Invalid tool input: " + str(e),
                         tool_name=name,
                     )
 
             # Execute with timeout
-            result = await asyncio.wait_for(tool.execute(arguments), timeout=timeout)
+            try:
+                result = await asyncio.wait_for(tool.execute(arguments), timeout=timeout)
+            except asyncio.TimeoutError:
+                # Update metrics but preserve the TimeoutError
+                if self.enable_metrics:
+                    self._log_metrics(name, "timeout", arguments, timeout=timeout)
+                    metrics.failed_calls += 1
+                raise
+
+            # Validate output if enabled
+            if ctx.validation_enabled and tool.metadata.validation and tool.metadata.validation.output_schema:
+                try:
+                    validate_schema(
+                        result,
+                        tool.metadata.validation.output_schema
+                    )
+                except Exception as e:
+                    if self.enable_metrics:
+                        self._log_metrics(name, "validation_error", arguments)
+                    raise ToolError(
+                        "Invalid tool output: " + str(e),
+                        tool_name=name,
+                    )
 
             # Cache result if enabled
             if ctx.cache_enabled:
                 self._cache[cache_key] = result
 
-            # Update and log metrics
-            await self._update_metrics(name, start_time, success=True)
-            if metrics:
+            # Update metrics for success
+            if self.enable_metrics:
+                metrics.successful_calls += 1
+                execution_time = time.monotonic() - start_time
+                if metrics.total_calls > 0:  # Guard against division by zero
+                    metrics.average_execution_time = (
+                        (metrics.average_execution_time * (metrics.total_calls - 1) + execution_time)
+                        / metrics.total_calls
+                    )
                 self._log_metrics(
                     name,
                     "success",
                     arguments,
-                    execution_time=time.monotonic() - start_time,
+                    execution_time=execution_time,
                 )
 
             return result
 
+        except ToolError:
+            # Don't wrap ToolError, but update failed calls count
+            if self.enable_metrics:
+                metrics.failed_calls += 1
+            raise
         except asyncio.TimeoutError:
-            if metrics:
-                self._log_metrics(name, "timeout", arguments, timeout=timeout)
-            await self._update_metrics(name, start_time, success=False)
-            raise ToolError(
-                f"Tool {name} timed out after {timeout} seconds",
-                tool_name=name,
-                execution_context={"timeout": timeout},
-            )
+            raise  # Let TimeoutError pass through unchanged
         except Exception as e:
-            if metrics:
+            if self.enable_metrics:
+                metrics.failed_calls += 1
                 self._log_metrics(name, "error", arguments, error=str(e))
-            await self._update_metrics(name, start_time, success=False)
-            raise ToolError(f"Tool {name} failed: {str(e)}", tool_name=name, cause=e)
+            raise ToolError(
+                f"Tool {name} failed: {str(e)}",
+                tool_name=name,
+                cause=e
+            )
 
     def _log_metrics(
         self, tool_name: str, status: str, arguments: dict, **extra: Any
@@ -233,7 +276,6 @@ class ToolManager:
             return
 
         metrics = self._metrics[tool_name]
-        metrics.total_calls += 1
         if success:
             metrics.successful_calls += 1
         else:
@@ -295,14 +337,30 @@ class ToolManager:
 
         start_time = time.monotonic()
         try:
+            # Update metrics at start of execution attempt
+            if self.enable_metrics:
+                metrics = self._metrics[tool_name]
+                metrics.total_calls += 1
+                metrics.last_used = datetime.now(UTC)
+
             async with self._execution_lock:
                 async for chunk in tool.stream(args):
                     yield chunk
 
-            await self._update_metrics(tool_name, start_time, success=True)
+            # Update metrics for success
+            if self.enable_metrics:
+                metrics.successful_calls += 1
+                execution_time = time.monotonic() - start_time
+                if metrics.total_calls > 0:  # Guard against division by zero
+                    metrics.average_execution_time = (
+                        (metrics.average_execution_time * (metrics.total_calls - 1) + execution_time)
+                        / metrics.total_calls
+                    )
 
         except Exception as e:
-            await self._update_metrics(tool_name, start_time, success=False)
+            if self.enable_metrics:
+                metrics = self._metrics[tool_name]
+                metrics.failed_calls += 1
             raise ToolError(
                 message=str(e),
                 tool_name=tool_name,

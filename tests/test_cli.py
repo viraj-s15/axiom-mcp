@@ -46,6 +46,11 @@ class EchoTool(Tool):
     async def execute(self, args: dict[str, Any]) -> str:
         return f"Echo: {args.get('message', '')}"
 
+    def __init__(self):
+        """Initialize tool."""
+        super().__init__()
+        self.settings = type('Settings', (), {'debug': False, 'log_level': 'info', 'port': 8888})()
+
     async def run(self, **kwargs):
         """Run the server."""
         # Mock implementation that just returns immediately for testing
@@ -57,7 +62,15 @@ mcp = EchoTool()
 
     # Patch asyncio.run to prevent actual server execution
     with patch("asyncio.run", new_callable=AsyncMock) as mock_run:
+        # Configure mock to return True
+        mock_run.return_value = True
         result = runner.invoke(app, ["dev", str(server_file)])
+        
+        # Debug output if test fails
+        if result.exit_code != 0:
+            print(f"Output: {result.output}")
+            print(f"Exception: {result.exception}")
+            
         assert result.exit_code == 0
         assert "Starting development server" in result.output
         mock_run.assert_called_once()
