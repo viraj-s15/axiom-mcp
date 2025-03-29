@@ -6,10 +6,10 @@ import hashlib
 import json
 import logging
 import time
-import os
 from collections import defaultdict
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -19,17 +19,8 @@ from ..exceptions import ToolError
 from .base import Tool, ToolContext
 
 logger = logging.getLogger(__name__)
-
-# Add FileHandler for metrics logging
 metrics_logger = logging.getLogger("axiom_mcp.tools.metrics")
 metrics_logger.setLevel(logging.INFO)
-metrics_file = os.path.join(
-    os.path.expanduser("~"), ".axiom_mcp", "metrics", "tools.log"
-)
-os.makedirs(os.path.dirname(metrics_file), exist_ok=True)
-metrics_handler = logging.FileHandler(metrics_file)
-metrics_handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
-metrics_logger.addHandler(metrics_handler)
 
 
 class ToolCacheEntry(BaseModel):
@@ -61,6 +52,7 @@ class ToolManager:
         default_timeout: float = 30.0,
         enable_metrics: bool = True,
         warn_on_duplicate_tools: bool = True,
+        metrics_dir: str | Path | None = None,
     ):
         """Initialize the tool manager.
 
@@ -69,6 +61,7 @@ class ToolManager:
             default_timeout: Default timeout for tool execution in seconds
             enable_metrics: Whether to collect execution metrics
             warn_on_duplicate_tools: Whether to warn on duplicate tool registration
+            metrics_dir: Directory to store metrics logs. If None, uses 'logs' directory relative to current working directory
         """
         self._tools: dict[str, type[Tool]] = {}
         self._metrics: dict[str, ToolMetrics] = defaultdict(ToolMetrics)
@@ -79,6 +72,21 @@ class ToolManager:
         self._initialized = False
         self._initialization_lock = asyncio.Lock()
         self._execution_lock = asyncio.Lock()
+
+        # Configure metrics logging
+        if enable_metrics:
+            metrics_path = Path(metrics_dir) if metrics_dir else Path.cwd() / "logs"
+            metrics_path.mkdir(parents=True, exist_ok=True)
+            metrics_file = metrics_path / "tools.log"
+
+            # Remove any existing handlers
+            for handler in metrics_logger.handlers[:]:
+                metrics_logger.removeHandler(handler)
+
+            # Add new file handler
+            metrics_handler = logging.FileHandler(metrics_file)
+            metrics_handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
+            metrics_logger.addHandler(metrics_handler)
 
     async def initialize(self) -> None:
         """Initialize the tool manager."""

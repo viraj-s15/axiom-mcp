@@ -10,11 +10,14 @@ from axiom_mcp.tools.base import Tool, ToolContext, ToolMetadata, ToolValidation
 
 
 @pytest.fixture
-def tool_manager():
+def tool_manager(tmp_path):
     """Create a tool manager instance."""
     from axiom_mcp.tools.manager import ToolManager
 
-    return ToolManager(cache_size=10, default_timeout=5.0, enable_metrics=True)
+    metrics_dir = tmp_path / "metrics"
+    return ToolManager(
+        cache_size=10, default_timeout=5.0, enable_metrics=True, metrics_dir=metrics_dir
+    )
 
 
 @pytest.fixture
