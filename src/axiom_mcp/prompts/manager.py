@@ -122,24 +122,7 @@ class PromptManager:
         start_time = datetime.now(UTC)
         try:
             messages = await prompt.render(arguments)
-        except Exception as e:
-            # Ensure arguments are properly serialized for logging
-            safe_args = {}
-            if arguments:
-                try:
-                    # Attempt to create a serializable copy of arguments
-                    import json
-                    safe_args = json.loads(json.dumps(arguments))
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    # If serialization fails, log what we can
-                    safe_args = {"error": "Arguments could not be serialized", 
-                               "arg_keys": list(arguments.keys() if arguments else [])}
-            
-            # Log the error with the arguments
-            logger.error(
-                f"Error rendering prompt '{prompt_name}': {str(e)}",
-                extra={"arguments": safe_args}
-            )
+        except Exception:
             self._record_failure(prompt_name, start_time)
             raise
         else:

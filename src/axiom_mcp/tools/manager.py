@@ -164,17 +164,7 @@ class ToolManager:
                     validate_schema(arguments, tool.metadata.validation.input_schema)
                 except Exception as e:
                     if self.enable_metrics:
-                        # Ensure arguments are properly serialized for logging
-                        safe_args = {}
-                        try:
-                            # Attempt to create a serializable copy of arguments
-                            safe_args = json.loads(json.dumps(arguments))
-                        except (TypeError, ValueError, json.JSONDecodeError):
-                            # If serialization fails, log what we can
-                            safe_args = {"error": "Arguments could not be serialized", 
-                                        "arg_keys": list(arguments.keys())}
-                        
-                        self._log_metrics(name, "validation_error", safe_args, 
+                        self._log_metrics(name, "validation_error", arguments, 
                                         error=str(e), validation_type="input")
                         metrics.failed_calls += 1
                     raise ToolError(
@@ -198,17 +188,7 @@ class ToolManager:
                         validate_schema(result, tool.metadata.validation.output_schema)
                     except Exception as e:
                         if self.enable_metrics:
-                            # Ensure arguments are properly serialized for logging
-                            safe_args = {}
-                            try:
-                                # Attempt to create a serializable copy of arguments
-                                safe_args = json.loads(json.dumps(arguments))
-                            except (TypeError, ValueError, json.JSONDecodeError):
-                                # If serialization fails, log what we can
-                                safe_args = {"error": "Arguments could not be serialized", 
-                                           "arg_keys": list(arguments.keys())}
-                            
-                            self._log_metrics(name, "validation_error", safe_args, 
+                            self._log_metrics(name, "validation_error", arguments, 
                                             error=str(e), validation_type="output")
                             metrics.failed_calls += 1
                         raise ToolError(
@@ -262,11 +242,21 @@ class ToolManager:
         if not self.enable_metrics:
             return
 
+        # Ensure arguments are properly serialized for logging
+        safe_args = {}
+        try:
+            # Attempt to create a serializable copy of arguments
+            safe_args = json.loads(json.dumps(arguments))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            # If serialization fails, log what we can
+            safe_args = {"error": "Arguments could not be serialized", 
+                        "arg_keys": list(arguments.keys() if arguments else [])}
+
         metrics_data = {
             "tool": tool_name,
             "status": status,
             "timestamp": datetime.now(UTC).isoformat(),
-            "arguments": arguments,
+            "arguments": safe_args,
             **extra,
         }
 
