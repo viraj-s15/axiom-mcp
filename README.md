@@ -29,7 +29,7 @@ uv pip install axiom-mcp
 
 3. Create and activate a virtual environment with uv:
    ```bash
-   uv venv
+   uv venv --python 3.12
    source .venv/bin/activate  # On Unix/Linux
    # or
    .venv\Scripts\activate  # On Windows
@@ -37,7 +37,7 @@ uv pip install axiom-mcp
 
 4. Install development dependencies:
    ```bash
-   uv pip install -e ".[dev]"
+   uv sync --frozen --extra dev
    ```
 
 ## Core Features
