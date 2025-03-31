@@ -172,13 +172,13 @@ axiom-mcp run server.py # This runs in release/prod mode
 uv run pytest
 
 # Run tests with coverage
-uv run pytest --cov=axiom_mcp tests/
+uv run pytest tests
 
 # Update dependencies
-uv pip compile pyproject.toml -o requirements.txt
+uv add <dep>
 
 # Sync your environment
-uv pip sync requirements.txt
+uv sync
 ```
 
 ## Contributing
