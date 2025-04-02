@@ -10,10 +10,10 @@ authors = [
 ]
 description = "🚀 MCP framework that unlocks truly scalable AI systems with zero friction"
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.11,<3.13"
 keywords = ["ai", "mcp", "model-context-protocol", "llm", "machine-learning", "axiom"]
 classifiers = [
-    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Operating System :: OS Independent",
@@ -76,13 +76,13 @@ packages = ["src/axiom_mcp"]
 
 [tool.black]
 line-length = 88
-target-version = ['py310', 'py311', 'py312']
+target-version = ['py311', 'py312']
 include = '\.pyi?$'
 
 [tool.ruff]
 select = ["E", "F", "B", "I"]
 line-length = 88
-target-version = ["py310", "py311", "py312"]
+target-version = ["py311", "py312"]
 fix = true
 
 [tool.ruff.isort]
