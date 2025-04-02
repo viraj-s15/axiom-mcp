@@ -1,6 +1,6 @@
 # Axiom MCP
 
-🚀 MCP framework that unlocks truly scalable AI systems with zero friction
+🚀  Robust and Dev friendly MCP framework 
 
 ## NOTE
 
